@@ -3,11 +3,11 @@
 // This function is simple and has OK performance compared to more
 // complicated ones: http://jsperf.com/json-escape-unicode/4
 import got from 'got'
-import { MAX_AGE_REFRESH_TOKEN } from '../../helpers/jwt.js'
-import { prepareStream } from '../../helpers/utils.js'
+import {MAX_AGE_REFRESH_TOKEN} from '../../helpers/jwt.js'
+import {prepareStream} from '../../helpers/utils.js'
 import logger from '../../logger.js'
 import Provider from '../Provider.js'
-import { withProviderErrorHandling } from '../providerErrors.js'
+import {withProviderErrorHandling} from '../providerErrors.js'
 import adaptData from './adapter.js'
 
 const charsToEncode = /[\u007f-\uffff]/g
@@ -96,6 +96,20 @@ async function list({ client, directory, query }) {
     .json()
 }
 
+async function getFileMetadata({ client, fileId }) {
+  return client
+    .post('files/get_metadata', {
+      json: {
+        path: fileId,
+        include_media_info: true,
+        include_deleted: false,
+        include_has_explicit_shared_members: false,
+      },
+      responseType: 'json',
+    })
+    .json()
+}
+
 async function fetchSearchEntries({ client, query }) {
   const scopePath =
     typeof query.path === 'string' ? decodeURIComponent(query.path) : undefined
@@ -174,6 +188,19 @@ export default class Dropbox extends Provider {
       const stats = await list({ ...options, client })
       const { email } = userInfo
       return adaptData(stats, email, options.companion.buildURL)
+    })
+  }
+
+  /**
+   * Get file metadata
+   */
+  async getFileMetadata(options) {
+    return this.#withErrorHandling('provider.dropbox.getFileMetadata.error', async () => {
+      const { client } = await getClient({
+        token: options.providerUserSession.accessToken,
+        namespaced: true,
+      })
+      return await getFileMetadata({...options, client})
     })
   }
 

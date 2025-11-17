@@ -217,6 +217,14 @@ export function app(optionsArg = {}) {
   )
 
   app.get(
+    '/:providerName/metadata/:id',
+    express.json(),
+    middlewares.hasSessionAndProvider,
+    middlewares.verifyToken,
+    controllers.getFileMetadata,
+  )
+
+  app.get(
     '/:providerName/list/:id?',
     middlewares.hasSessionAndProvider,
     middlewares.verifyToken,

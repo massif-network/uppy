@@ -56,6 +56,16 @@ export default class Provider {
   }
 
   /**
+   * download metadata for a provider file
+   *
+   * @param {object} options
+   * @returns {Promise}
+   */
+  async getFileMetadata(options) {
+    throw new Error('method not implemented')
+  }
+
+  /**
    * return a thumbnail for a provider file
    *
    * @param {object} options
