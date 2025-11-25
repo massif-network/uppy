@@ -3,11 +3,11 @@
 // This function is simple and has OK performance compared to more
 // complicated ones: http://jsperf.com/json-escape-unicode/4
 import got from 'got'
-import {MAX_AGE_REFRESH_TOKEN} from '../../helpers/jwt.js'
-import {prepareStream} from '../../helpers/utils.js'
+import { MAX_AGE_REFRESH_TOKEN } from '../../helpers/jwt.js'
+import { prepareStream } from '../../helpers/utils.js'
 import logger from '../../logger.js'
 import Provider from '../Provider.js'
-import {withProviderErrorHandling} from '../providerErrors.js'
+import { withProviderErrorHandling } from '../providerErrors.js'
 import adaptData from './adapter.js'
 
 const charsToEncode = /[\u007f-\uffff]/g
@@ -97,17 +97,57 @@ async function list({ client, directory, query }) {
 }
 
 async function getFileMetadata({ client, fileId }) {
-  return client
-    .post('files/get_metadata', {
-      json: {
-        path: fileId,
-        include_media_info: true,
-        include_deleted: false,
-        include_has_explicit_shared_members: false,
-      },
-      responseType: 'json',
-    })
-    .json()
+  const maxRetries = 3
+  const maxWaitTime = 30000 // 30 seconds in milliseconds
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await client
+        .post('files/get_metadata', {
+          json: {
+            path: fileId,
+            include_media_info: true,
+            include_deleted: false,
+            include_has_explicit_shared_members: false,
+          },
+          responseType: 'json',
+        })
+        .json()
+    } catch (error) {
+      const isLastAttempt = attempt === maxRetries - 1
+
+      // Only retry on 429 rate limit errors
+      if (error.response?.statusCode === 429 && !isLastAttempt) {
+        const retryAfter = error.response.headers['retry-after']
+        console.log(`Dropbox API rate limit hit with retry-after ${retryAfter}. Retrying attempt ${attempt + 1} of ${maxRetries}...`)
+        let waitTime
+
+        if (retryAfter) {
+          // Retry-After can be in seconds (integer) or HTTP date format
+          if (/^\d+$/.test(retryAfter)) {
+            // It's in seconds
+            waitTime = parseInt(retryAfter, 10) * 1000
+          } else {
+            // It's an HTTP date
+            const retryDate = new Date(retryAfter)
+            waitTime = retryDate.getTime() - Date.now()
+          }
+        } else {
+          // No Retry-After header, use exponential backoff: 1s, 2s, 4s, ...
+          waitTime = 1000 * 2 ** attempt
+        }
+
+        // Cap the wait time at maxWaitTime and ensure it's not negative
+        waitTime = Math.min(Math.max(0, waitTime), maxWaitTime)
+
+        // Wait before retrying
+        await new Promise((resolve) => setTimeout(resolve, waitTime))
+      } else {
+        // Not a 429 or last attempt reached, rethrow the error
+        throw error
+      }
+    }
+  }
 }
 
 async function fetchSearchEntries({ client, query }) {
@@ -195,13 +235,16 @@ export default class Dropbox extends Provider {
    * Get file metadata
    */
   async getFileMetadata(options) {
-    return this.#withErrorHandling('provider.dropbox.getFileMetadata.error', async () => {
-      const { client } = await getClient({
-        token: options.providerUserSession.accessToken,
-        namespaced: true,
-      })
-      return await getFileMetadata({...options, client})
-    })
+    return this.#withErrorHandling(
+      'provider.dropbox.getFileMetadata.error',
+      async () => {
+        const { client } = await getClient({
+          token: options.providerUserSession.accessToken,
+          namespaced: true,
+        })
+        return await getFileMetadata({ ...options, client })
+      },
+    )
   }
 
   async download({ id, providerUserSession: { accessToken: token } }) {
