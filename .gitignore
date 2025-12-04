@@ -41,3 +41,4 @@ issues.txt
 # companion deployment files
 transloadit-cluster-kubeconfig.yaml
 companion-env.yml
+.env
