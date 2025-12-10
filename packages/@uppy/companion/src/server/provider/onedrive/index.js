@@ -1,8 +1,8 @@
 import got from 'got'
-import { prepareStream } from '../../helpers/utils.js'
+import {prepareStream} from '../../helpers/utils.js'
 import logger from '../../logger.js'
 import Provider from '../Provider.js'
-import { withProviderErrorHandling } from '../providerErrors.js'
+import {withProviderErrorHandling} from '../providerErrors.js'
 import adaptData from './adapter.js'
 
 const getClient = ({ token }) =>
@@ -126,6 +126,37 @@ export default class OneDrive extends Provider {
           })
           .json()
         return { accessToken }
+      },
+    )
+  }
+
+  /**
+   * Get metadata for a specific file
+   * This includes photo and video metadata for EXIF-like data
+   *
+   * @param {object} options
+   * @param {object} options.providerUserSession
+   * @param {string} options.fileId - The ID of the file to get metadata for
+   * @param {object} options.query - Query parameters (may include driveId)
+   * @returns {Promise<object>} File metadata including media metadata
+   */
+  async getFileMetadata({ fileId, providerUserSession: { accessToken: token }, query }) {
+    return this.#withErrorHandling(
+      'provider.onedrive.getFileMetadata.error',
+      async () => {
+        const client = getClient({ token })
+
+        // OneDrive provides photo and video metadata through the Graph API
+        // We need to expand thumbnails and get all metadata
+        return client
+          .get(`${getRootPath(query)}/items/${fileId}`, {
+            searchParams: {
+              $expand: 'thumbnails',
+              $select: 'id,name,size,file,folder,photo,video,location,createdDateTime,lastModifiedDateTime,parentReference,@microsoft.graph.downloadUrl'
+            },
+            responseType: 'json',
+          })
+          .json()
       },
     )
   }
