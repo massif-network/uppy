@@ -221,6 +221,51 @@ export class Drive extends Provider {
       },
     )
   }
+
+  /**
+   * Get metadata for a specific file
+   * This includes imageMediaMetadata and videoMediaMetadata for EXIF-like data
+   *
+   * @param {object} options
+   * @param {object} options.providerUserSession
+   * @param {string} options.fileId - The ID of the file to get metadata for
+   * @returns {Promise<object>} File metadata including media metadata
+   */
+  async getFileMetadata({ fileId, providerUserSession: { accessToken: token } }) {
+    return withGoogleErrorHandling(
+      Drive.oauthProvider,
+      'provider.drive.getFileMetadata.error',
+      async () => {
+        const client = getClient({ token })
+
+        // Fetch the file metadata including image and video metadata
+        const metadata = await client
+          .get(`files/${encodeURIComponent(fileId)}`, {
+            searchParams: {
+              fields: DRIVE_FILE_FIELDS,
+              supportsAllDrives: true
+            },
+            responseType: 'json',
+          })
+          .json()
+
+        // If it's a shortcut, fetch metadata for the target file
+        if (isShortcut(metadata.mimeType)) {
+          return client
+            .get(`files/${encodeURIComponent(metadata.shortcutDetails.targetId)}`, {
+              searchParams: {
+                fields: DRIVE_FILE_FIELDS,
+                supportsAllDrives: true
+              },
+              responseType: 'json',
+            })
+            .json()
+        }
+
+        return metadata
+      },
+    )
+  }
 }
 
 Drive.prototype.logout = logout
