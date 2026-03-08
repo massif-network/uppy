@@ -69,12 +69,22 @@ function getCorsOrigins() {
 const s3Prefix = process.env.COMPANION_AWS_PREFIX || ''
 
 /**
- * Default getKey for Companion standalone variant
+ * Default getKey for Companion standalone variant.
+ *
+ * When COMPANION_AWS_METADATA_KEY is enabled, the file's metadata.objectName
+ * is used as the S3 key (set by the client during file preparation).
+ * Falls back to the default random UUID + filename pattern.
  *
  * @returns {string}
  */
-const defaultStandaloneGetKey = (...args) =>
-  `${s3Prefix}${utils.defaultGetKey(...args)}`
+const useMetadataKey = process.env.COMPANION_AWS_METADATA_KEY === 'true'
+
+const defaultStandaloneGetKey = ({ req, filename, metadata }) => {
+  if (useMetadataKey && metadata?.objectName) {
+    return `${s3Prefix}${metadata.objectName}`
+  }
+  return `${s3Prefix}${utils.defaultGetKey({ req, filename, metadata })}`
+}
 
 /**
  * Loads the config from environment variables
@@ -134,7 +144,15 @@ const getConfigFromEnv = () => {
       key: process.env.COMPANION_AWS_KEY,
       getKey: defaultStandaloneGetKey,
       secret: getSecret('COMPANION_AWS_SECRET'),
-      bucket: process.env.COMPANION_AWS_BUCKET,
+      // When COMPANION_AWS_DYNAMIC_BUCKET is true, the bucket is resolved from
+      // the file's metadata.bucketName (set by the client). This enables per-org
+      // bucket routing for R2 or any S3-compatible storage.
+      // Falls back to COMPANION_AWS_BUCKET if metadata doesn't specify one.
+      bucket:
+        process.env.COMPANION_AWS_DYNAMIC_BUCKET === 'true'
+          ? ({ metadata }) =>
+              metadata?.bucketName || process.env.COMPANION_AWS_BUCKET
+          : process.env.COMPANION_AWS_BUCKET,
       endpoint: process.env.COMPANION_AWS_ENDPOINT,
       region: process.env.COMPANION_AWS_REGION,
       useAccelerateEndpoint:
