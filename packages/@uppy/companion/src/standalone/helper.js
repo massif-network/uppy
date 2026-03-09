@@ -80,11 +80,11 @@ const s3Prefix = process.env.COMPANION_AWS_PREFIX || ''
  */
 const useMetadataKey = process.env.COMPANION_AWS_METADATA_KEY === 'true'
 
-const defaultStandaloneGetKey = ({ req, filename, metadata }) => {
+const defaultStandaloneGetKey = ({ filename, metadata }) => {
   if (useMetadataKey && metadata?.objectName) {
     return `${s3Prefix}${metadata.objectName}`
   }
-  return `${s3Prefix}${utils.defaultGetKey({ req, filename, metadata })}`
+  return `${s3Prefix}${utils.defaultGetKey({ filename })}`
 }
 
 /**
