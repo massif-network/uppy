@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { stripIndent } from 'common-tags'
 import merge from 'lodash/merge.js'
 import packageJson from '../../package.json' with { type: 'json' }
+import { validateBucketToken } from '../massif/bucket-auth.js'
 import * as utils from '../server/helpers/utils.js'
 import logger from '../server/logger.js'
 
@@ -148,10 +149,25 @@ const getConfigFromEnv = () => {
       // the file's metadata.bucketName (set by the client). This enables per-org
       // bucket routing for R2 or any S3-compatible storage.
       // Falls back to COMPANION_AWS_BUCKET if metadata doesn't specify one.
+      //
+      // When COMPANION_BUCKET_AUTH_SECRET is also set, the client must provide
+      // a signed bucketAuthToken in metadata (created by the app server).
+      // This prevents users from uploading to buckets they don't own.
       bucket:
         process.env.COMPANION_AWS_DYNAMIC_BUCKET === 'true'
-          ? ({ metadata }) =>
-              metadata?.bucketName || process.env.COMPANION_AWS_BUCKET
+          ? ({ metadata }) => {
+              const resolved =
+                metadata?.bucketName || process.env.COMPANION_AWS_BUCKET
+              // Validate token when auth secret is set AND metadata is present.
+              // Multipart continuation endpoints (listParts, signPart, complete)
+              // call getBucket without metadata — they inherit the bucket from
+              // the initial createMultipartUpload call where the token was validated.
+              const authSecret = process.env.COMPANION_BUCKET_AUTH_SECRET
+              if (authSecret && metadata) {
+                validateBucketToken(metadata, resolved, authSecret)
+              }
+              return resolved
+            }
           : process.env.COMPANION_AWS_BUCKET,
       endpoint: process.env.COMPANION_AWS_ENDPOINT,
       region: process.env.COMPANION_AWS_REGION,

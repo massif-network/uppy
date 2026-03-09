@@ -6,7 +6,6 @@ import {
   UploadPartCommand,
 } from '@aws-sdk/client-s3'
 import { GetFederationTokenCommand, STSClient } from '@aws-sdk/client-sts'
-import { createPresignedPost } from '@aws-sdk/s3-presigned-post'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import express from 'express'
 import {
@@ -14,6 +13,7 @@ import {
   rfc2047EncodeMetadata,
   truncateFilename,
 } from '../helpers/utils.js'
+import { getPresignedPutParams } from '../../massif/r2-upload-params.js'
 
 export default function s3(config) {
   if (typeof config.acl !== 'string' && config.acl != null) {
@@ -88,31 +88,14 @@ export default function s3(config) {
       return
     }
 
-    const fields = {
-      success_action_status: '201',
-      'content-type': req.query.type,
-    }
-
-    if (config.acl != null) fields.acl = config.acl
-
-    Object.keys(metadata).forEach((metadataKey) => {
-      fields[`x-amz-meta-${metadataKey}`] = metadata[metadataKey]
-    })
-
-    createPresignedPost(client, {
-      Bucket: bucket,
-      Expires: config.expires,
-      Fields: fields,
-      Conditions: config.conditions,
-      Key: key,
-    }).then((data) => {
-      res.json({
-        method: 'POST',
-        url: data.url,
-        fields: data.fields,
-        expires: config.expires,
-      })
-    }, next)
+    getPresignedPutParams(client, {
+      bucket,
+      key,
+      type: req.query.type,
+      metadata,
+      acl: config.acl,
+      expires: config.expires,
+    }).then((data) => res.json(data), next)
   }
 
   /**
