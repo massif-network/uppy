@@ -20,6 +20,7 @@ import {
   rfc2047EncodeMetadata,
   truncateFilename,
 } from './helpers/utils.js'
+import { ensureBucket } from '../massif/ensure-bucket.js'
 import * as logger from './logger.js'
 import * as redis from './redis.js'
 
@@ -742,8 +743,11 @@ export default class Uploader {
     const { metadata } = this.options
     const { client, options } = s3Options
 
+    const bucket = getBucket({ bucketOrFn: options.bucket, req, metadata })
+    await ensureBucket(client, bucket)
+
     const params = {
-      Bucket: getBucket({ bucketOrFn: options.bucket, req, metadata }),
+      Bucket: bucket,
       Key: options.getKey({ req, filename, metadata }),
       ContentType: metadata.type,
       Metadata: rfc2047EncodeMetadata(metadata),

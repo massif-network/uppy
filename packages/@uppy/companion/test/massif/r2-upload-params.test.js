@@ -16,9 +16,13 @@ vi.mock('@aws-sdk/client-s3', () => ({
       this.input = input
     }
   },
+  HeadBucketCommand: class HeadBucketCommand {
+    constructor(input) { this.input = input }
+  },
 }))
 
-const fakeClient = /** @type {any} */ ({})
+// Client mock needs send() for ensureBucket's HeadBucketCommand
+const fakeClient = /** @type {any} */ ({ send: vi.fn(async () => ({})) })
 
 describe('getPresignedPutParams', () => {
   it('returns method PUT with a signed URL', async () => {

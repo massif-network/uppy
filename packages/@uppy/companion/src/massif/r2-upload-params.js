@@ -12,6 +12,7 @@
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { rfc2047EncodeMetadata } from '../server/helpers/utils.js'
+import { ensureBucket } from './ensure-bucket.js'
 
 /**
  * Generate a presigned PUT URL for direct upload.
@@ -27,6 +28,8 @@ import { rfc2047EncodeMetadata } from '../server/helpers/utils.js'
  * @returns {Promise<{ method: string, url: string, fields: Record<string, string>, expires: number, headers: Record<string, string> }>}
  */
 export async function getPresignedPutParams(client, { bucket, key, type, metadata = {}, acl, expires }) {
+  await ensureBucket(client, bucket)
+
   const params = {
     Bucket: bucket,
     Key: key,

@@ -13,6 +13,7 @@ import {
   rfc2047EncodeMetadata,
   truncateFilename,
 } from '../helpers/utils.js'
+import { ensureBucket } from '../../massif/ensure-bucket.js'
 import { getPresignedPutParams } from '../../massif/r2-upload-params.js'
 
 export default function s3(config) {
@@ -161,7 +162,7 @@ export default function s3(config) {
 
     if (config.acl != null) params.ACL = config.acl
 
-    client.send(new CreateMultipartUploadCommand(params)).then((data) => {
+    ensureBucket(client, bucket).then(() => client.send(new CreateMultipartUploadCommand(params))).then((data) => {
       res.json({
         key: data.Key,
         uploadId: data.UploadId,
