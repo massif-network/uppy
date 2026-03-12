@@ -162,7 +162,9 @@ export default function s3(config) {
 
     if (config.acl != null) params.ACL = config.acl
 
-    ensureBucket(client, bucket).then(() => client.send(new CreateMultipartUploadCommand(params))).then((data) => {
+    ensureBucket(client, bucket)
+      .then(() => client.send(new CreateMultipartUploadCommand(params)))
+      .then((data) => {
       res.json({
         key: data.Key,
         uploadId: data.UploadId,
