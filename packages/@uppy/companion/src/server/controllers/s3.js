@@ -15,6 +15,33 @@ import {
   truncateFilename,
 } from '../helpers/utils.js'
 
+// Server-side cache: uploadId → bucket name.
+// Populated during createMultipartUpload so that subsequent multipart
+// endpoints (signPart, listParts, complete, abort) can resolve the correct
+// bucket without metadata from the client.
+// Entries are removed on complete/abort; a 24-hour TTL guards against leaks
+// from abandoned uploads.
+const uploadBucketCache = new Map()
+const BUCKET_CACHE_TTL = 24 * 60 * 60 * 1000
+
+function cacheBucket(uploadId, bucket) {
+  uploadBucketCache.set(uploadId, { bucket, expires: Date.now() + BUCKET_CACHE_TTL })
+}
+
+function getCachedBucket(uploadId) {
+  const entry = uploadBucketCache.get(uploadId)
+  if (!entry) return undefined
+  if (Date.now() > entry.expires) {
+    uploadBucketCache.delete(uploadId)
+    return undefined
+  }
+  return entry.bucket
+}
+
+function removeCachedBucket(uploadId) {
+  uploadBucketCache.delete(uploadId)
+}
+
 export default function s3(config) {
   if (typeof config.acl !== 'string' && config.acl != null) {
     throw new TypeError('s3: The `acl` option must be a string or null')
@@ -177,12 +204,12 @@ export default function s3(config) {
     }
 
     if (config.acl != null) params.ACL = config.acl
-
     client.send(new CreateMultipartUploadCommand(params)).then((data) => {
+      cacheBucket(data.UploadId, bucket)
       res.json({
         key: data.Key,
         uploadId: data.UploadId,
-        bucket: data.Bucket,
+        bucket,
       })
     }, next)
   }
@@ -215,7 +242,7 @@ export default function s3(config) {
       return
     }
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = req.query.bucket || getCachedBucket(uploadId) || getBucket({ bucketOrFn: config.bucket, req })
 
     const parts = []
 
@@ -275,7 +302,7 @@ export default function s3(config) {
       return
     }
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = req.query.bucket || getCachedBucket(uploadId) || getBucket({ bucketOrFn: config.bucket, req })
 
     getSignedUrl(
       client,
@@ -336,7 +363,7 @@ export default function s3(config) {
       return
     }
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = req.query.bucket || getCachedBucket(uploadId) || getBucket({ bucketOrFn: config.bucket, req })
 
     Promise.all(
       partNumbersArray.map((partNumber) => {
@@ -388,7 +415,7 @@ export default function s3(config) {
       return
     }
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = req.query.bucket || getCachedBucket(uploadId) || getBucket({ bucketOrFn: config.bucket, req })
 
     client
       .send(
@@ -398,7 +425,10 @@ export default function s3(config) {
           UploadId: uploadId,
         }),
       )
-      .then(() => res.json({}), next)
+      .then(() => {
+        removeCachedBucket(uploadId)
+        res.json({})
+      }, next)
   }
 
   /**
@@ -443,7 +473,7 @@ export default function s3(config) {
       return
     }
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = req.query.bucket || getCachedBucket(uploadId) || getBucket({ bucketOrFn: config.bucket, req })
 
     client
       .send(
@@ -457,10 +487,11 @@ export default function s3(config) {
         }),
       )
       .then((data) => {
+        removeCachedBucket(uploadId)
         res.json({
           location: data.Location,
           key: data.Key,
-          bucket: data.Bucket,
+          bucket,
         })
       }, next)
   }
