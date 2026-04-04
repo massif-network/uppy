@@ -126,6 +126,8 @@ export default function s3(config) {
       fields[`x-amz-meta-${metadataKey}`] = metadata[metadataKey]
     })
 
+    console.log(`Creating S3 presigned POST with bucket "${bucket}", key "${key}", and fields:`, fields)
+
     createPresignedPost(client, {
       Bucket: bucket,
       Expires: config.expires,
@@ -202,6 +204,8 @@ export default function s3(config) {
       ContentType: type,
       Metadata: rfc2047EncodeMetadata(metadata),
     }
+
+    console.log(`Creating S3 multipart upload with bucket "${bucket}", key "${key}", content type "${type}", and metadata:`, metadata)
 
     if (config.acl != null) params.ACL = config.acl
     client.send(new CreateMultipartUploadCommand(params)).then((data) => {
