@@ -1,5 +1,14 @@
 # @uppy/transloadit
 
+## 5.5.1
+
+### Patch Changes
+
+- 4787960: Add type re-export for `AssemblyInstructionsInput`
+- 29d2772: remove monkey patch from uppy bundle package
+- Updated dependencies [82d8dac]
+  - @uppy/utils@7.2.0
+
 ## 5.5.0
 
 ### Minor Changes
