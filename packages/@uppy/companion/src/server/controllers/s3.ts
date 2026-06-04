@@ -87,6 +87,38 @@ export default function s3(
   }
 
   /**
+   * Resolve the bucket and the real S3 uploadId for a multipart lifecycle
+   * request. The lifecycle endpoints receive no metadata, so the bucket is
+   * recovered from, in order of preference:
+   *  1. The `bucket~uploadId` prefix embedded in the uploadId at create time
+   *     (only when `config.bucket` is a function). This is stateless and
+   *     survives restarts and multi-instance deployments.
+   *  2. An explicit `?bucket=` query parameter.
+   *  3. The in-memory uploadId → bucket cache populated at create time.
+   *  4. The configured bucket (static string or fn fallback).
+   */
+  function decodeBucketAndUploadId(req: Request): {
+    bucket: string
+    uploadId: string
+  } {
+    const rawParam = req.params['uploadId']
+    const raw = typeof rawParam === 'string' ? rawParam : ''
+    const sep = raw.indexOf('~')
+    if (typeof config.bucket === 'function' && sep > 0) {
+      return { bucket: raw.slice(0, sep), uploadId: raw.slice(sep + 1) }
+    }
+    const queryBucket =
+      typeof req.query['bucket'] === 'string' ? req.query['bucket'] : undefined
+    return {
+      bucket:
+        queryBucket ??
+        getCachedBucket(raw) ??
+        getBucket({ bucketOrFn: config.bucket, req }),
+      uploadId: raw,
+    }
+  }
+
+  /**
    * Get upload paramaters for a simple direct upload.
    *
    * Expected query parameters:
@@ -263,7 +295,14 @@ export default function s3(
       if (data.UploadId) cacheBucket(data.UploadId, bucket)
       res.json({
         key: data.Key,
-        uploadId: data.UploadId,
+        // Dynamic bucket: embed the resolved bucket in the uploadId so the
+        // later lifecycle endpoints (which receive no metadata) can decode it
+        // statelessly even if the in-memory cache is lost (restart,
+        // multi-instance) — see decodeBucketAndUploadId above.
+        uploadId:
+          typeof config.bucket === 'function'
+            ? `${bucket}~${data.UploadId}`
+            : data.UploadId,
         bucket,
       })
     }, next)
@@ -287,7 +326,7 @@ export default function s3(
     if (!client) return
     const s3Client = client
 
-    const { uploadId } = req.params
+    const { bucket, uploadId } = decodeBucketAndUploadId(req)
     const { key } = req.query
 
     assert(
@@ -303,13 +342,6 @@ export default function s3(
       return
     }
     const keyStr = key
-
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
 
     const parts: Part[] = []
 
@@ -352,7 +384,7 @@ export default function s3(
     const client = getS3Client(req, res)
     if (!client) return
 
-    const uploadId = req.params['uploadId']
+    const { bucket, uploadId } = decodeBucketAndUploadId(req)
     const partNumber = req.params['partNumber']
     const key = req.query['key']
 
@@ -373,13 +405,6 @@ export default function s3(
       })
       return
     }
-
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
 
     getSignedUrl(
       client,
@@ -417,7 +442,7 @@ export default function s3(
     const client = getS3Client(req, res)
     if (!client) return
 
-    const uploadId = req.params['uploadId']
+    const { bucket, uploadId } = decodeBucketAndUploadId(req)
     const key = req.query['key']
     const partNumbers = req.query['partNumbers']
 
@@ -449,13 +474,6 @@ export default function s3(
       })
       return
     }
-
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
 
     Promise.all(
       partNumbersArray.map((partNumber) => {
@@ -503,7 +521,7 @@ export default function s3(
     const client = getS3Client(req, res)
     if (!client) return
 
-    const { uploadId } = req.params
+    const { bucket, uploadId } = decodeBucketAndUploadId(req)
     const { key } = req.query
 
     assert(
@@ -518,13 +536,6 @@ export default function s3(
       })
       return
     }
-
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
 
     client
       .send(
@@ -560,7 +571,7 @@ export default function s3(
     const client = getS3Client(req, res)
     if (!client) return
 
-    const { uploadId } = req.params
+    const { bucket, uploadId } = decodeBucketAndUploadId(req)
     const { key } = req.query
     const { parts }: { parts: unknown } = req.body
 
@@ -590,13 +601,6 @@ export default function s3(
       })
       return
     }
-
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
 
     client
       .send(
