@@ -10,10 +10,24 @@ name: Publish @massif-network/smugmug
 #                                 so branch builds never clobber the stable release.
 on:
   workflow_dispatch: {}
+  # Guarded auto-publish: only on pushes to a NON-main branch that actually touch
+  # the plugin (or this workflow). Those publish an `-rc.<run_number>` under `rc`.
+  # main releases stay manual via workflow_dispatch.
+  push:
+    branches-ignore:
+      - main
+    paths:
+      - "packages/@massif-network/smugmug/**"
+      - ".github/workflows/publish-smugmug.yml"
 
 permissions:
   contents: read
   packages: write
+
+# Serialize per-branch so rapid pushes don't race; never cancel an in-flight publish.
+concurrency:
+  group: publish-smugmug-${{ github.ref }}
+  cancel-in-progress: false
 
 defaults:
   run:
