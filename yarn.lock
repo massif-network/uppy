@@ -9164,6 +9164,7 @@ __metadata:
     ms: "npm:2.1.3"
     nock: "npm:^14.0.15"
     node-schedule: "npm:2.1.1"
+    oauth-1.0a: "npm:2.2.6"
     p-map: "npm:7.0.4"
     prom-client: "npm:15.1.3"
     serialize-error: "npm:13.0.1"
@@ -18710,6 +18711,13 @@ __metadata:
   version: 2.2.20
   resolution: "nwsapi@npm:2.2.20"
   checksum: 10/3dbfbd64c10dfd1edaf4992a6e859af306ec22846b86da2b31e69a743a8b4d7ac3b6ca767dbf248dabea8652905e402d6986f8ba491852e8568e334ec22e1882
+  languageName: node
+  linkType: hard
+
+"oauth-1.0a@npm:2.2.6":
+  version: 2.2.6
+  resolution: "oauth-1.0a@npm:2.2.6"
+  checksum: 10/5807a52077538e853a47a29ee4cc0a87a0882b89918b4c069ebb295ad81c5abef451010ccaca3b991bf59f79f18893fe1df0186706097e2a3fdda9abc5dbe211
   languageName: node
   linkType: hard
 

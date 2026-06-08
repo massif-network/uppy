@@ -38,14 +38,21 @@ export interface GrantDynamic {
   state?: string
 }
 
+// The `response` object Grant stores in the session after the OAuth handshake.
+// OAuth2 providers populate `access_token`/`refresh_token`; OAuth1 providers
+// (e.g. SmugMug) populate `access_token`/`access_secret` instead.
+export interface GrantResponse {
+  access_token?: string
+  refresh_token?: string
+  access_secret?: string
+  raw?: Record<string, unknown>
+}
+
 export interface CompanionSession {
   grant?: {
     state?: string | null
     dynamic?: GrantDynamic | null
-    response?: {
-      access_token?: string
-      refresh_token?: string
-    }
+    response?: GrantResponse
   }
 }
 
