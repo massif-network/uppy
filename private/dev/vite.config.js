@@ -37,6 +37,10 @@ const config = {
         replacement: `${PACKAGES_ROOT}@uppy/$1/src/index`,
       },
       {
+        find: /^@massif-network\/([^/]+)$/,
+        replacement: `${PACKAGES_ROOT}@massif-network/$1/src/index`,
+      },
+      {
         find: /^@uppy\/([^/]+)\/lib\/(.+?)(\.js)?$/,
         replacement: `${PACKAGES_ROOT}@uppy/$1/src/$2`,
       },
