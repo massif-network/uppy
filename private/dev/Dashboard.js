@@ -14,6 +14,7 @@ import ImageGenerator from '@uppy/image-generator'
 import english from '@uppy/locales/lib/en_US.js'
 import RemoteSources from '@uppy/remote-sources'
 import ScreenCapture from '@uppy/screen-capture'
+import SmugMug from '@uppy/smugmug'
 import Transloadit from '@uppy/transloadit'
 import Tus from '@uppy/tus'
 import Webcam from '@uppy/webcam'
@@ -121,6 +122,11 @@ export default () => {
       companionUrl: COMPANION_URL,
       companionAllowedHosts,
       ...getCompanionKeysParams('GOOGLE_DRIVE'),
+    })
+    .use(SmugMug, {
+      target: Dashboard,
+      companionUrl: COMPANION_URL,
+      companionAllowedHosts,
     })
     // .use(Dropbox, { target: Dashboard, companionUrl: COMPANION_URL, companionAllowedHosts })
     // .use(Box, { target: Dashboard, companionUrl: COMPANION_URL, companionAllowedHosts })

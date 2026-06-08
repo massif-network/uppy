@@ -1,0 +1,52 @@
+{
+  "name": "@uppy/smugmug",
+  "description": "Import files from SmugMug, into Uppy.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json",
+    "typecheck": "tsc --build"
+  },
+  "keywords": [
+    "file uploader",
+    "uppy",
+    "uppy-plugin",
+    "smugmug"
+  ],
+  "homepage": "https://uppy.io",
+  "bugs": {
+    "url": "https://github.com/transloadit/uppy/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/transloadit/uppy.git"
+  },
+  "files": [
+    "src",
+    "lib",
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@uppy/companion-client": "workspace:^",
+    "@uppy/provider-views": "workspace:^",
+    "@uppy/utils": "workspace:^",
+    "preact": "^10.29.2"
+  },
+  "peerDependencies": {
+    "@uppy/core": "workspace:^"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@uppy/core": "workspace:^",
+    "typescript": "^5.8.3"
+  }
+}
