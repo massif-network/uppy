@@ -76,8 +76,11 @@ export function adaptNodeChildren(
         isAlbum && albumKey ? `album:${albumKey}` : `node:${node.NodeID}`
 
       return {
+        // Folders and albums are both navigable containers; render the folder
+        // glyph (provider-views' ItemIcon only understands 'file'/'folder'/'video',
+        // anything else is treated as an <img> URL).
         isFolder: true,
-        icon: node.Type?.toLowerCase(),
+        icon: 'folder',
         name: node.Name || '',
         mimeType: null,
         id: requestPath,
@@ -116,7 +119,8 @@ export function adaptAlbumImages(
 
       return {
         isFolder: false,
-        icon: image.ThumbnailUrl,
+        // Falls back to the file glyph when an image has no thumbnail URL.
+        icon: image.ThumbnailUrl ?? 'file',
         name,
         mimeType: typeof mimeType === 'string' ? mimeType : null,
         id: requestPath,
