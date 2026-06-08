@@ -4,7 +4,7 @@ cd /Users/gummis/code/massif-network/massif-uppy
 # Check if .env exists at project root
 if [ -f .env ]; then
   # Load .env and run with dotenv
-  exec node -r dotenv/config packages/@uppy/companion/lib/standalone/start-server.js
+  exec node -r dotenv/config packages/@uppy/companion/dist/standalone/start-server.js
 else
   # Use development defaults
   exec env \
@@ -16,5 +16,5 @@ else
     COMPANION_SECRET="development" \
     COMPANION_PREAUTH_SECRET="development2" \
     COMPANION_ALLOW_LOCAL_URLS="true" \
-    node packages/@uppy/companion/lib/standalone/start-server.js
+    node packages/@uppy/companion/dist/standalone/start-server.js
 fi
