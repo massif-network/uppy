@@ -9591,6 +9591,21 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@uppy/smugmug@workspace:packages/@uppy/smugmug":
+  version: 0.0.0-use.local
+  resolution: "@uppy/smugmug@workspace:packages/@uppy/smugmug"
+  dependencies:
+    "@uppy/companion-client": "workspace:^"
+    "@uppy/core": "workspace:^"
+    "@uppy/provider-views": "workspace:^"
+    "@uppy/utils": "workspace:^"
+    preact: "npm:^10.29.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@uppy/core": "workspace:^"
+  languageName: unknown
+  linkType: soft
+
 "@uppy/status-bar@workspace:*, @uppy/status-bar@workspace:packages/@uppy/status-bar":
   version: 0.0.0-use.local
   resolution: "@uppy/status-bar@workspace:packages/@uppy/status-bar"

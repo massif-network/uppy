@@ -193,6 +193,11 @@ const getConfigFromEnv = (): StandaloneCompanionOptions => {
         key: process.env['COMPANION_UNSPLASH_KEY'],
         secret: process.env['COMPANION_UNSPLASH_SECRET'],
       },
+      smugmug: {
+        key: process.env['COMPANION_SMUGMUG_API_KEY'],
+        secret: getSecret('COMPANION_SMUGMUG_API_SECRET'),
+        credentialsURL: process.env['COMPANION_SMUGMUG_KEYS_ENDPOINT'],
+      },
     },
     s3: {
       key: process.env['COMPANION_AWS_KEY'],
