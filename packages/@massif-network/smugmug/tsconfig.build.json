@@ -8,16 +8,16 @@
   "exclude": ["./src/**/*.test.ts"],
   "references": [
     {
-      "path": "../companion-client/tsconfig.build.json"
+      "path": "../../@uppy/companion-client/tsconfig.build.json"
     },
     {
-      "path": "../provider-views/tsconfig.build.json"
+      "path": "../../@uppy/provider-views/tsconfig.build.json"
     },
     {
-      "path": "../utils/tsconfig.build.json"
+      "path": "../../@uppy/utils/tsconfig.build.json"
     },
     {
-      "path": "../core/tsconfig.build.json"
+      "path": "../../@uppy/core/tsconfig.build.json"
     }
   ]
 }

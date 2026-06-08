@@ -1,0 +1,38 @@
+name: Publish @massif-network/smugmug
+
+# Manually triggered publish of the SmugMug client plugin to GitHub Packages
+# (npm.pkg.github.com), so massif-network/massif can depend on it. Intentionally
+# scoped to this one package — the upstream "publish everything" release workflow
+# stays disabled (release.yml_).
+# To release a new version: bump "version" in
+# packages/@massif-network/smugmug/package.json, merge, then run this workflow.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build plugin (and its workspace deps)
+        run: yarn workspace @massif-network/smugmug build
+
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: yarn workspace @massif-network/smugmug npm publish

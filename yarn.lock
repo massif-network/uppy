@@ -4875,6 +4875,21 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@massif-network/smugmug@workspace:packages/@massif-network/smugmug":
+  version: 0.0.0-use.local
+  resolution: "@massif-network/smugmug@workspace:packages/@massif-network/smugmug"
+  dependencies:
+    "@uppy/companion-client": "workspace:^"
+    "@uppy/core": "workspace:^"
+    "@uppy/provider-views": "workspace:^"
+    "@uppy/utils": "workspace:^"
+    preact: "npm:^10.29.2"
+    typescript: "npm:^5.8.3"
+  peerDependencies:
+    "@uppy/core": "workspace:^"
+  languageName: unknown
+  linkType: soft
+
 "@mjackson/file-storage@npm:^0.7.0":
   version: 0.7.0
   resolution: "@mjackson/file-storage@npm:0.7.0"
@@ -9585,21 +9600,6 @@ __metadata:
     postcss-cli: "npm:^11.0.1"
     preact: "npm:^10.29.2"
     sass: "npm:^1.89.2"
-    typescript: "npm:^5.8.3"
-  peerDependencies:
-    "@uppy/core": "workspace:^"
-  languageName: unknown
-  linkType: soft
-
-"@uppy/smugmug@workspace:packages/@uppy/smugmug":
-  version: 0.0.0-use.local
-  resolution: "@uppy/smugmug@workspace:packages/@uppy/smugmug"
-  dependencies:
-    "@uppy/companion-client": "workspace:^"
-    "@uppy/core": "workspace:^"
-    "@uppy/provider-views": "workspace:^"
-    "@uppy/utils": "workspace:^"
-    preact: "npm:^10.29.2"
     typescript: "npm:^5.8.3"
   peerDependencies:
     "@uppy/core": "workspace:^"
