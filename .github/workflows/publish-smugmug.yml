@@ -56,8 +56,9 @@ jobs:
           if [ "${GITHUB_REF_NAME}" = "main" ]; then
             echo "tag=latest" >> "$GITHUB_OUTPUT"
           else
-            base=$(node -p "require('./package.json').version")
-            npm version "${base}-rc.${GITHUB_RUN_NUMBER}" --no-git-tag-version
+            # Edit package.json directly with node — `npm version` would walk up to
+            # the yarn workspace root and choke on its `patch:` protocol deps.
+            node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("package.json"));j.version=j.version+"-rc."+process.env.GITHUB_RUN_NUMBER;fs.writeFileSync("package.json",JSON.stringify(j,null,2)+"\n")'
             echo "tag=rc" >> "$GITHUB_OUTPUT"
           fi
 
