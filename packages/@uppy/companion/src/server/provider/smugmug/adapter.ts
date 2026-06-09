@@ -67,15 +67,19 @@ export function adaptNodeChildren(
 ): ProviderListResponse {
   const nodes = res.Response?.Node ?? []
 
-  const items = nodes
-    .filter((node) => node.Type != null && NAVIGABLE_NODE_TYPES.has(node.Type))
-    .map((node) => {
-      const isAlbum = node.Type === 'Album'
-      const albumKey = isAlbum ? getAlbumKey(node) : undefined
-      const requestPath =
-        isAlbum && albumKey ? `album:${albumKey}` : `node:${node.NodeID}`
+  const items = nodes.flatMap((node) => {
+    if (node.Type == null || !NAVIGABLE_NODE_TYPES.has(node.Type)) return []
 
-      return {
+    const isAlbum = node.Type === 'Album'
+    const albumKey = isAlbum ? getAlbumKey(node) : undefined
+    // Skip nodes we can't navigate to: albums without a resolvable AlbumKey
+    // (opening them would hit /node/{id}!children and list nothing), and
+    // folders without a NodeID.
+    if (isAlbum ? albumKey == null : node.NodeID == null) return []
+    const requestPath = isAlbum ? `album:${albumKey}` : `node:${node.NodeID}`
+
+    return [
+      {
         // Folders and albums are both navigable containers; render the folder
         // glyph (provider-views' ItemIcon only understands 'file'/'folder'/'video',
         // anything else is treated as an <img> URL).
@@ -88,10 +92,9 @@ export function adaptNodeChildren(
         modifiedDate: node.DateModified,
         thumbnail: undefined,
         size: null,
-      }
-    })
-    // An album whose key we couldn't resolve isn't navigable; drop it.
-    .filter((item) => !item.requestPath.endsWith(':undefined'))
+      },
+    ]
+  })
 
   return {
     username,
