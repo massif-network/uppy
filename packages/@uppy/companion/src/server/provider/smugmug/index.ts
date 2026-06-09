@@ -58,7 +58,14 @@ type ImageResponse = {
 
 const getConsumer = (companion: CompanionWithOptions): Consumer => {
   const opts = companion.options.providerOptions?.['smugmug']
-  return { key: opts?.key ?? '', secret: opts?.secret ?? '' }
+  if (!opts?.key || !opts?.secret) {
+    // Fail fast with a clear message rather than signing with empty strings,
+    // which produces opaque OAuth-signature errors downstream.
+    throw new Error(
+      'SmugMug provider is not configured: set COMPANION_SMUGMUG_API_KEY and COMPANION_SMUGMUG_API_SECRET',
+    )
+  }
+  return { key: opts.key, secret: opts.secret }
 }
 
 /**
@@ -198,6 +205,11 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
       const user = authUser.Response?.User
       const username = user?.Name || user?.NickName
       const rootNodeId = user?.Uris?.Node?.Uri?.split('/').pop()
+      if (!cursor && !rootNodeId) {
+        throw new Error(
+          'SmugMug !authuser response did not include a root node Uri',
+        )
+      }
       const res = cursor
         ? await apiGetCursor<SmugMugNodeChildrenResponse>(client, cursor)
         : await apiGet<SmugMugNodeChildrenResponse>(
