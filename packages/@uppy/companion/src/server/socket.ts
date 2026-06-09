@@ -125,6 +125,18 @@ export default function setupSockets(
 ) {
   const wss = new WebSocketServer({ server })
 
+  // Keep idle WebSocket connections alive through reverse proxies that drop
+  // idle connections (e.g. Koyeb). The auth-callback socket sits idle while the
+  // user completes the OAuth flow in the popup; without periodic pings the proxy
+  // closes it and the token can't be delivered, surfacing as "Socket closed".
+  // The browser answers each ping with an automatic pong, so traffic keeps flowing.
+  const keepAliveInterval = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.readyState === ws.OPEN) ws.ping()
+    }
+  }, 25_000)
+  wss.on('close', () => clearInterval(keepAliveInterval))
+
   const urlBuilder = getURLBuilder(companionOptions)
 
   const externalBasePath = urlBuilder('', true, true)
