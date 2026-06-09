@@ -45,9 +45,17 @@ export type SmugMugAlbumImagesResponse = {
 const NAVIGABLE_NODE_TYPES = new Set(['Folder', 'Album'])
 
 // SmugMug paginates with a ready-made `NextPage` URI; carry it forward as our cursor.
-const getNextPagePath = (nextPage: string | undefined): string | null => {
+// The directory MUST be preserved as the path prefix: the client feeds `nextPagePath`
+// back in as the next `directory` (ProviderView pages with `list(nextPagePath)`), so
+// dropping it makes page 2+ fall through to the root branch and get adapted with the
+// wrong shape — e.g. album images past the first 100 would silently vanish. Mirrors the
+// `${directory}?${query}` shape the other providers (OneDrive, Drive, …) use.
+const getNextPagePath = (
+  nextPage: string | undefined,
+  directory: string | undefined,
+): string | null => {
   if (!nextPage) return null
-  return `?${querystring.stringify({ cursor: nextPage })}`
+  return `${directory ?? ''}?${querystring.stringify({ cursor: nextPage })}`
 }
 
 // An Album node references its album as `/api/v2/album/<AlbumKey>`; pull the key out
@@ -64,6 +72,7 @@ const getAlbumKey = (node: SmugMugNode): string | undefined => {
 export function adaptNodeChildren(
   res: SmugMugNodeChildrenResponse,
   username: string | undefined,
+  directory: string | undefined,
 ): ProviderListResponse {
   const nodes = res.Response?.Node ?? []
 
@@ -99,7 +108,7 @@ export function adaptNodeChildren(
   return {
     username,
     items,
-    nextPagePath: getNextPagePath(res.Response?.Pages?.NextPage),
+    nextPagePath: getNextPagePath(res.Response?.Pages?.NextPage, directory),
   }
 }
 
@@ -110,6 +119,7 @@ export function adaptNodeChildren(
 export function adaptAlbumImages(
   res: SmugMugAlbumImagesResponse,
   username: string | undefined,
+  directory: string | undefined,
 ): ProviderListResponse {
   const images = res.Response?.AlbumImage ?? []
 
@@ -138,6 +148,6 @@ export function adaptAlbumImages(
   return {
     username,
     items,
-    nextPagePath: getNextPagePath(res.Response?.Pages?.NextPage),
+    nextPagePath: getNextPagePath(res.Response?.Pages?.NextPage, directory),
   }
 }

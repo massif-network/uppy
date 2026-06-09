@@ -184,7 +184,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
               `album/${albumKey}!images`,
               { _count: PAGE_SIZE },
             )
-        return adaptAlbumImages(res, undefined)
+        return adaptAlbumImages(res, undefined, directory)
       }
 
       // Folder node: list its children.
@@ -197,7 +197,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
               `node/${nodeId}!children`,
               { _count: PAGE_SIZE },
             )
-        return adaptNodeChildren(res, undefined)
+        return adaptNodeChildren(res, undefined, directory)
       }
 
       // Root: resolve the authenticated user → their root node → its children.
@@ -217,7 +217,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
             `node/${rootNodeId}!children`,
             { _count: PAGE_SIZE },
           )
-      return adaptNodeChildren(res, username)
+      return adaptNodeChildren(res, username, directory)
     })
   }
 
