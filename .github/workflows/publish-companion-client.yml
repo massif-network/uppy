@@ -8,6 +8,11 @@ name: Publish @massif-network/companion-client
 # publish time. Bump the package's version to release a new one.
 on:
   workflow_dispatch: {}
+  # workflow_dispatch only works once the file is on the default branch; the
+  # push trigger runs it straight from this branch.
+  push:
+    branches:
+      - chore/publish-companion-client
 
 permissions:
   contents: read
