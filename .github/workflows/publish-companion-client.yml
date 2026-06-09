@@ -1,0 +1,58 @@
+name: Publish @massif-network/companion-client
+
+# Republishes the fork's @uppy/companion-client (WebSocket-based OAuth token
+# delivery — immune to COOP-induced window.opener severance) to GitHub Packages
+# under the @massif-network scope, so massif can alias it via pnpm overrides:
+#   "@uppy/companion-client": "npm:@massif-network/companion-client@<version>"
+# The package keeps its @uppy/ name in-repo; this workflow renames it only at
+# publish time. Bump the package's version to release a new one.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build companion-client (+ its workspace deps)
+        run: yarn workspace @uppy/companion-client build
+
+      - name: Pack, rename to @massif-network scope
+        run: |
+          set -euo pipefail
+          # yarn pack converts workspace: deps to concrete version ranges.
+          yarn workspace @uppy/companion-client pack --out /tmp/cc.tgz
+          rm -rf /tmp/pkg && mkdir -p /tmp/pkg
+          tar xzf /tmp/cc.tgz -C /tmp/pkg --strip-components=1
+          node -e '
+            const fs = require("fs");
+            const p = "/tmp/pkg/package.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            j.name = "@massif-network/companion-client";
+            j.repository = { type: "git", url: "git+https://github.com/massif-network/uppy.git" };
+            j.publishConfig = { registry: "https://npm.pkg.github.com" };
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+            console.log("publishing", j.name + "@" + j.version);
+          '
+          printf '@massif-network:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n' > /tmp/pkg/.npmrc
+
+      - name: Publish to GitHub Packages
+        working-directory: /tmp/pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish
