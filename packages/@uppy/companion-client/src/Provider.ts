@@ -207,7 +207,12 @@ export default class Provider<M extends Meta, B extends Body>
     let timeout: ReturnType<typeof setTimeout> | undefined
 
     try {
-      const host = getSocketHost(this.opts.companionUrl)
+      // `getSocketHost` preserves a trailing slash when `companionUrl` has one
+      // (e.g. `new URL(...).toString()` always appends one). Strip it so we don't
+      // build `wss://host//api2/...` — the double slash fails the server-side
+      // auth-callback route match and the socket is closed immediately ("Socket
+      // closed"). Mirrors the `stripSlash` normalization in RequestClient.
+      const host = getSocketHost(this.opts.companionUrl).replace(/\/$/, '')
 
       // Note that this promise is not guaranteed to settle in all cases
       const token = await new Promise<string>((resolve, reject) => {
