@@ -1,0 +1,23 @@
+{
+  "extends": "../../../tsconfig.shared",
+  "compilerOptions": {
+    "outDir": "./lib",
+    "rootDir": "./src"
+  },
+  "include": ["./src/**/*.*"],
+  "exclude": ["./src/**/*.test.ts"],
+  "references": [
+    {
+      "path": "../../@uppy/companion-client/tsconfig.build.json"
+    },
+    {
+      "path": "../../@uppy/provider-views/tsconfig.build.json"
+    },
+    {
+      "path": "../../@uppy/utils/tsconfig.build.json"
+    },
+    {
+      "path": "../../@uppy/core/tsconfig.build.json"
+    }
+  ]
+}

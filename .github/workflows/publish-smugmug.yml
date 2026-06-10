@@ -1,0 +1,73 @@
+name: Publish @massif-network/smugmug
+
+# Manual publish of just @massif-network/smugmug to GitHub Packages, so
+# massif-network/massif can depend on it. The upstream "publish everything"
+# release workflow stays disabled (release.yml_).
+#
+# Run it FROM main             -> publishes package.json's version under `latest`
+#                                 (bump "version" before merging to cut a release).
+# Run it from any OTHER branch -> publishes <version>-rc.<run_number> under `rc`,
+#                                 so branch builds never clobber the stable release.
+on:
+  workflow_dispatch: {}
+  # Guarded auto-publish: only on pushes to a NON-main branch that actually touch
+  # the plugin (or this workflow). Those publish an `-rc.<run_number>` under `rc`.
+  # main releases stay manual via workflow_dispatch.
+  push:
+    branches-ignore:
+      - main
+    paths:
+      - "packages/@massif-network/smugmug/**"
+      - ".github/workflows/publish-smugmug.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+# Serialize per-branch so rapid pushes don't race; never cancel an in-flight publish.
+concurrency:
+  group: publish-smugmug-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: packages/@massif-network/smugmug
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+        working-directory: .
+
+      - name: Determine version & dist-tag
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          else
+            # Edit package.json directly with node — `npm version` would walk up to
+            # the yarn workspace root and choke on its `patch:` protocol deps.
+            node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("package.json"));j.version=j.version+"-rc."+process.env.GITHUB_RUN_NUMBER;fs.writeFileSync("package.json",JSON.stringify(j,null,2)+"\n")'
+            echo "tag=rc" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build plugin (and its workspace deps)
+        run: yarn workspace @massif-network/smugmug build
+        working-directory: .
+
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: yarn workspace @massif-network/smugmug npm publish --tag ${{ steps.ver.outputs.tag }}
+        working-directory: .

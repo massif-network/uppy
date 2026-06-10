@@ -1,3 +1,4 @@
+import SmugMug from '@massif-network/smugmug'
 import Audio from '@uppy/audio'
 import AwsS3 from '@uppy/aws-s3'
 import Compressor from '@uppy/compressor'
@@ -122,7 +123,11 @@ export default () => {
       companionAllowedHosts,
       ...getCompanionKeysParams('GOOGLE_DRIVE'),
     })
-    // .use(Instagram, { target: Dashboard, companionUrl: COMPANION_URL, companionAllowedHosts })
+    .use(SmugMug, {
+      target: Dashboard,
+      companionUrl: COMPANION_URL,
+      companionAllowedHosts,
+    })
     // .use(Dropbox, { target: Dashboard, companionUrl: COMPANION_URL, companionAllowedHosts })
     // .use(Box, { target: Dashboard, companionUrl: COMPANION_URL, companionAllowedHosts })
     // .use(Facebook, { target: Dashboard, companionUrl: COMPANION_URL, companionAllowedHosts })
@@ -150,7 +155,6 @@ export default () => {
         'Box',
         'Dropbox',
         'Facebook',
-        'Instagram',
         'OneDrive',
         'Unsplash',
         'Zoom',

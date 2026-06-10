@@ -1,7 +1,7 @@
 {
   "name": "@uppy/companion-client",
   "description": "Client library for communication with Companion. Intended for use in Uppy plugins.",
-  "version": "5.1.1",
+  "version": "5.1.2",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -41,9 +41,9 @@
     "p-retry": "^6.1.0"
   },
   "devDependencies": {
-    "jsdom": "^26.1.0",
+    "jsdom": "^29.1.1",
     "typescript": "^5.8.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.6"
   },
   "peerDependencies": {
     "@uppy/core": "workspace:^"

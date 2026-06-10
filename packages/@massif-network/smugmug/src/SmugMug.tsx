@@ -1,0 +1,133 @@
+import {
+  type CompanionPluginOptions,
+  getAllowedHosts,
+  Provider,
+  tokenStorage,
+} from '@uppy/companion-client'
+import type {
+  AsyncStore,
+  Body,
+  Meta,
+  UnknownProviderPlugin,
+  UnknownProviderPluginState,
+  UppyFile,
+} from '@uppy/core'
+import { UIPlugin, type Uppy } from '@uppy/core'
+import { ProviderViews } from '@uppy/provider-views'
+
+import type { LocaleStrings } from '@uppy/utils'
+// biome-ignore lint/style/useImportType: h is not a type
+import { type ComponentChild, h } from 'preact'
+import packageJson from '../package.json' with { type: 'json' }
+import locale from './locale.js'
+
+export type SmugMugOptions = CompanionPluginOptions & {
+  locale?: LocaleStrings<typeof locale>
+}
+
+export default class SmugMug<M extends Meta, B extends Body>
+  extends UIPlugin<SmugMugOptions, M, B, UnknownProviderPluginState>
+  implements UnknownProviderPlugin<M, B>
+{
+  static VERSION = packageJson.version
+
+  icon: () => h.JSX.Element
+
+  provider: Provider<M, B>
+
+  view!: ProviderViews<M, B>
+
+  storage: AsyncStore
+
+  files: UppyFile<M, B>[]
+
+  rootFolderId: string | null = null
+
+  constructor(uppy: Uppy<M, B>, opts: SmugMugOptions) {
+    super(uppy, opts)
+    this.id = this.opts.id || 'SmugMug'
+    this.type = 'acquirer'
+    this.storage = this.opts.storage || tokenStorage
+    this.files = []
+    this.icon = () => (
+      <svg
+        className="uppy-DashboardTab-iconSmugMug"
+        aria-hidden="true"
+        focusable="false"
+        width="22"
+        height="22"
+        viewBox="0 0 93 93"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <circle cx="46" cy="46" r="37" fill="white" />
+        <path
+          d="M46.3214 0C20.7732 0 0 20.7877 0 46.3214C0 71.8552 20.7877 92.6428 46.3214 92.6428C71.8696 92.6428 92.6428 71.8552 92.6428 46.3214C92.6428 20.7732 71.8552 0 46.3214 0ZM46.3214 80.7992C27.1206 80.7992 11.4974 65.3347 11.4974 46.3214C11.4974 27.3081 27.1206 11.8436 46.3214 11.8436C65.5222 11.8436 81.1454 27.3081 81.1454 46.3214C81.1454 65.3347 65.5222 80.7992 46.3214 80.7992Z"
+          fill="#252626"
+        />
+        <path
+          d="M56.5204 36.2666C56.7224 36.2666 56.9099 36.2666 57.1119 36.2522C59.5498 36.1223 61.5262 35.4732 62.9688 34.3191C64.3825 33.1939 65.1759 31.6503 65.1904 29.9769V29.6451C65.1038 28.1016 64.3825 26.659 63.1563 25.5626C61.555 24.1633 59.3335 23.4997 56.8811 23.6872L56.6214 23.7161C52.7985 24.12 50.5337 26.7167 49.9855 29.1835L49.8845 29.7317C49.6393 31.5061 50.2163 33.2372 51.4425 34.4489C52.6687 35.6607 54.4143 36.281 56.506 36.281L56.5204 36.2666Z"
+          fill="#252626"
+        />
+        <path
+          d="M64.8586 42.5849C63.4449 41.5463 61.6272 41.0269 59.4489 41.0269L58.1217 41.1424C49.9279 41.9358 47.9804 42.1233 35.3145 42.4263L28.8661 42.5705C27.2793 42.5849 25.9233 43.2341 24.9567 44.4314C24.1633 45.4124 23.6728 46.7252 23.4997 48.3409C23.2112 51.125 23.9037 54.6882 25.4184 58.136C28.4045 64.9162 35.0981 72.1579 44.8788 72.1579C49.1922 72.1579 53.5343 70.5422 57.4726 67.4695C60.8338 64.844 63.719 61.2808 65.6232 57.4291C67.5563 53.4909 68.2343 49.7113 67.5274 46.7829C67.109 45.0373 66.1714 43.5803 64.8298 42.5994L64.8586 42.5849ZM56.8234 55.5538C54.7173 59.2035 50.6203 63.1129 45.4703 63.1418C38.0843 63.1418 34.4633 58.8717 32.9631 56.3183C31.6792 54.14 31.3762 52.3657 31.3041 51.7021C31.2897 51.5578 31.2753 51.428 31.2753 51.2982C39.1229 50.9952 44.3018 50.7067 48.3555 50.4615L49.4518 50.4037C51.9475 50.2595 53.9094 50.1441 55.8425 50.0575L58.0785 49.9854H58.1073C58.2227 49.9854 58.2805 49.9854 58.2805 49.9854C58.3093 50.0287 58.4103 50.2306 58.4247 50.6923C58.4535 51.9473 57.8477 53.7505 56.8234 55.5394V55.5538Z"
+          fill="#252626"
+        />
+        <path
+          d="M34.9681 36.7716C34.9681 36.7716 35.0835 36.7716 35.1412 36.7716L36.0788 36.7283C40.5509 36.3243 43.6524 33.5257 43.436 30.0635L43.4071 29.7173C43.0321 26.7312 40.2768 24.6106 36.3529 24.3365L35.5595 24.3076H35.5018C31.4626 24.3076 28.9669 27.1062 28.3466 29.7317L28.2456 30.2943C28.0004 32.011 28.5341 33.67 29.6738 34.8529C30.9 36.108 32.7176 36.7716 34.9536 36.7716H34.9681Z"
+          fill="#252626"
+        />
+      </svg>
+    )
+
+    this.opts.companionAllowedHosts = getAllowedHosts(
+      this.opts.companionAllowedHosts,
+      this.opts.companionUrl,
+    )
+    this.provider = new Provider(uppy, {
+      companionUrl: this.opts.companionUrl,
+      companionHeaders: this.opts.companionHeaders,
+      companionKeysParams: this.opts.companionKeysParams,
+      companionCookiesRule: this.opts.companionCookiesRule,
+      provider: 'smugmug',
+      pluginId: this.id,
+      // SmugMug is OAuth 1.0a: tokens don't expire and there is no refresh token.
+      supportsRefreshToken: false,
+    })
+
+    this.defaultLocale = locale
+
+    this.i18nInit()
+    this.title = this.i18n('pluginNameSmugMug')
+
+    this.render = this.render.bind(this)
+  }
+
+  install(): void {
+    this.view = new ProviderViews(this, {
+      provider: this.provider,
+      loadAllFiles: true,
+      virtualList: true,
+    })
+
+    const { target } = this.opts
+    if (target) {
+      this.mount(target, this)
+    }
+  }
+
+  uninstall(): void {
+    this.view.tearDown()
+    this.unmount()
+  }
+
+  render(state: unknown): ComponentChild {
+    return this.view.render(state)
+  }
+}
+
+declare module '@uppy/core' {
+  export interface PluginTypeRegistry<M extends Meta, B extends Body> {
+    SmugMug: SmugMug<M, B>
+  }
+}

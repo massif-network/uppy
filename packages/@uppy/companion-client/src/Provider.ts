@@ -5,8 +5,11 @@ import type {
   UnknownProviderPlugin,
   Uppy,
 } from '@uppy/core'
-import type { CompanionClientProvider, RequestOptions } from '@uppy/utils'
-import { isOriginAllowed } from './getAllowedHosts.js'
+import {
+  type CompanionClientProvider,
+  getSocketHost,
+  type RequestOptions,
+} from '@uppy/utils'
 import type { CompanionPluginOptions } from './index.js'
 import RequestClient, { authErrorStatusCode } from './RequestClient.js'
 
@@ -135,22 +138,27 @@ export default class Provider<M extends Meta, B extends Body>
   authUrl({
     authFormData,
     query,
+    authCallbackToken,
   }: {
     authFormData: unknown
     query: Record<string, string>
+    authCallbackToken?: string | undefined
   }): string {
-    const params = new URLSearchParams({
+    const searchParams = new URLSearchParams({
       ...query,
-      // This is only used for Companion instances configured to accept multiple origins.
+      // `origin` is only used for Companion instances configured to accept multiple origins.
       state: btoa(JSON.stringify({ origin: getOrigin() })),
       ...this.authQuery({ authFormData }),
     })
 
     if (this.preAuthToken) {
-      params.set('uppyPreAuthToken', this.preAuthToken)
+      searchParams.set('uppyPreAuthToken', this.preAuthToken)
+    }
+    if (authCallbackToken) {
+      searchParams.set('authCallbackToken', authCallbackToken)
     }
 
-    return `${this.hostname}/${this.id}/connect?${params}`
+    return `${this.hostname}/${this.id}/connect?${searchParams}`
   }
 
   protected async loginSimpleAuth({
@@ -181,85 +189,94 @@ export default class Provider<M extends Meta, B extends Body>
     signal: AbortSignal
   }): Promise<void> {
     await this.ensurePreAuth()
-
     signal.throwIfAborted()
 
-    const link = this.authUrl({ query: { uppyVersions }, authFormData })
+    // Important: We need to do this synchronously, or else browsers might block the popup.
+    // (We cannot wait until the websocket connection is established).
+    // This opens up a race condtition if the websocket is not connected before the user
+    // completes(or cancels) authentication, but that’s a small compromose we gotta make.
+    const authCallbackToken = crypto.randomUUID()
+
+    const link = this.authUrl({
+      query: { uppyVersions },
+      authFormData,
+      authCallbackToken,
+    })
     const authWindow = window.open(link, '_blank')
-    let interval: number | undefined
-    let handleMessage: ((e: MessageEvent<any>) => void) | undefined
+    let webSocket: WebSocket | undefined
+    let timeout: ReturnType<typeof setTimeout> | undefined
 
     try {
-      return await new Promise((resolve, reject) => {
-        handleMessage = (e: MessageEvent<any>) => {
-          if (e.source !== authWindow) {
-            let jsonData = ''
-            try {
-              // TODO improve our uppy logger so that it can take an arbitrary number of arguments,
-              // each either objects, errors or strings,
-              // then we don’t have to manually do these things like json stringify when logging.
-              // the logger should never throw an error.
-              jsonData = JSON.stringify(e.data)
-            } catch (_err) {
-              // in case JSON.stringify fails (ignored)
+      // `getSocketHost` preserves a trailing slash when `companionUrl` has one
+      // (e.g. `new URL(...).toString()` always appends one). Strip it so we don't
+      // build `wss://host//api2/...` — the double slash fails the server-side
+      // auth-callback route match and the socket is closed immediately ("Socket
+      // closed"). Mirrors the `stripSlash` normalization in RequestClient.
+      const host = getSocketHost(this.opts.companionUrl).replace(/\/$/, '')
+
+      // Note that this promise is not guaranteed to settle in all cases
+      const token = await new Promise<string>((resolve, reject) => {
+        webSocket = new WebSocket(
+          `${host}/api2/auth-callback/token/${authCallbackToken}`,
+        )
+
+        webSocket.addEventListener('close', () => {
+          reject(new Error('Socket closed'))
+        })
+
+        webSocket.addEventListener('error', (error) => {
+          this.uppy.log(
+            `Companion socket error ${JSON.stringify(error)}, closing socket`,
+            'warning',
+          )
+          webSocket?.close() // 'close' event will be emitted
+        })
+
+        webSocket.addEventListener('message', (e) => {
+          try {
+            const { token, error } = JSON.parse(e.data)
+            if (error) {
+              reject(new Error('Authentication reported error'))
+            } else if (!token) {
+              reject(new Error('Authentication did not return a token'))
+            } else {
+              resolve(token)
             }
-            this.uppy.log(
-              `ignoring event from unknown source ${jsonData}`,
-              'warning',
-            )
-            return
+          } catch (err) {
+            reject(err)
           }
+        })
 
-          const { companionAllowedHosts } = this.#getPlugin().opts
-          if (!isOriginAllowed(e.origin, companionAllowedHosts)) {
-            this.uppy.log(
-              `ignoring event from ${e.origin} vs allowed pattern ${companionAllowedHosts}`,
-              'warning',
-            )
-            // We cannot reject here because the page might send events from other origins
-            // before sending the "real" auth completed event.
-            // for example Box has a "Pendo" tool that sends events to the opener
-            // https://github.com/transloadit/uppy/pull/5719
-            return
-          }
+        signal.addEventListener('abort', () =>
+          reject(new Error('Authentication was aborted')),
+        )
 
-          // Check if it's a string before doing the JSON.parse to maintain support
-          // for older Companion versions that used object references
-          const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data
-
-          if (data.error) {
-            const { uppy } = this
-            const message = uppy.i18n('authAborted')
-            uppy.info({ message }, 'warning', 5000)
-            reject(new Error('auth aborted'))
-            return
-          }
-
-          if (!data.token) {
-            reject(new Error('did not receive token from auth window'))
-            return
-          }
-
-          resolve(this.setAuthToken(data.token))
-        }
-
-        // poll for user closure of the window, so we can reject when it happens
-        if (authWindow) {
-          interval = window.setInterval(() => {
-            if (authWindow.closed) {
-              reject(new Error('Auth window was closed by the user'))
-            }
-          }, 500)
-        }
-
-        signal.addEventListener('abort', () => reject(new Error('Aborted')))
-        window.addEventListener('message', handleMessage)
+        // We intentionally do NOT poll `authWindow.closed` to detect cancellation.
+        // Once the auth popup navigates cross-origin (e.g. to the OAuth provider),
+        // the browser severs our handle to it and `window.closed` falsely reports
+        // `true` — which would abort a perfectly valid, in-progress authentication.
+        // Success arrives over the WebSocket; cancellation comes via `signal` (the
+        // user dismissing the auth UI). A safety timeout prevents leaking the socket
+        // and pending promise if neither ever resolves.
+        timeout = setTimeout(
+          () => reject(new Error('Authentication timed out')),
+          5 * 60 * 1000,
+        )
       })
+
+      this.setAuthToken(token)
+    } catch (err) {
+      const message = this.uppy.i18n('authAborted')
+      this.uppy.info({ message }, 'warning', 5000)
+      this.uppy.log(`Authentication failed: ${err.message}`, 'warning')
+      throw err
     } finally {
       // cleanup:
-      authWindow?.close()
-      window.clearInterval(interval)
-      if (handleMessage) window.removeEventListener('message', handleMessage)
+      // if we don't setTimeout, the window doesn't really close (I don't know why).
+      setTimeout(() => authWindow?.close(), 1)
+      this.uppy.log(`Closing auth callback socket ${authCallbackToken}`)
+      webSocket?.close()
+      clearTimeout(timeout)
     }
   }
 

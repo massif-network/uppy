@@ -1,0 +1,89 @@
+import querystring from 'node:querystring'
+import { describe, expect, test } from 'vitest'
+import {
+  adaptAlbumImages,
+  adaptNodeChildren,
+  type SmugMugAlbumImagesResponse,
+  type SmugMugNodeChildrenResponse,
+} from '../src/server/provider/smugmug/adapter.js'
+
+// Regression coverage for album/folder pagination: the client pages by feeding
+// `nextPagePath` straight back in as the next `directory`, so the directory MUST
+// be preserved as the path prefix. Without it, page 2+ falls through to the root
+// branch and album images past the first 100 are silently dropped.
+describe('SmugMug adapter pagination', () => {
+  test('adaptAlbumImages keeps the album directory in nextPagePath', () => {
+    const nextPage = '/api/v2/album/abc!images?start=101&count=100'
+    const res: SmugMugAlbumImagesResponse = {
+      Response: {
+        AlbumImage: [
+          { ImageKey: 'k1', FileName: 'a.jpg' },
+          // videos are filtered out (images-only for now)
+          { ImageKey: 'k2', FileName: 'b.mov', IsVideo: true },
+        ],
+        Pages: { NextPage: nextPage },
+      },
+    }
+
+    const { items, nextPagePath } = adaptAlbumImages(
+      res,
+      undefined,
+      'album:abc',
+    )
+
+    expect(items.map((i) => i.id)).toEqual(['image:k1'])
+    // Must re-route to the `album:` branch on the next page, not the root branch.
+    const [path, qs] = (nextPagePath as string).split('?')
+    expect(path).toBe('album:abc')
+    expect(querystring.parse(qs ?? '')['cursor']).toBe(nextPage)
+  })
+
+  test('adaptNodeChildren keeps the node directory in nextPagePath', () => {
+    const nextPage = '/api/v2/node/n1!children?start=101'
+    const res: SmugMugNodeChildrenResponse = {
+      Response: {
+        Node: [
+          {
+            Type: 'Album',
+            Name: 'My album',
+            NodeID: 'n2',
+            Uris: { Album: { Uri: '/api/v2/album/xyz' } },
+          },
+        ],
+        Pages: { NextPage: nextPage },
+      },
+    }
+
+    const { nextPagePath } = adaptNodeChildren(res, undefined, 'node:n1')
+
+    const [path, qs] = (nextPagePath as string).split('?')
+    expect(path).toBe('node:n1')
+    expect(querystring.parse(qs ?? '')['cursor']).toBe(nextPage)
+  })
+
+  test('root listing (no directory) paginates back into the root branch', () => {
+    const res: SmugMugNodeChildrenResponse = {
+      Response: {
+        Node: [],
+        Pages: { NextPage: '/api/v2/node/root!children?start=101' },
+      },
+    }
+
+    const { nextPagePath } = adaptNodeChildren(res, 'user', undefined)
+
+    // No directory prefix: the next request re-enters the root branch, which also
+    // adapts node children, so root pagination stays correct.
+    expect(nextPagePath?.startsWith('?')).toBe(true)
+  })
+
+  test('a final page (no NextPage) yields a null nextPagePath', () => {
+    expect(
+      adaptAlbumImages({ Response: { AlbumImage: [] } }, undefined, 'album:abc')
+        .nextPagePath,
+    ).toBeNull()
+    expect(
+      adaptNodeChildren({ Response: { Node: [] } }, undefined, undefined)
+        .nextPagePath,
+    ).toBeNull()
+  })
+})
