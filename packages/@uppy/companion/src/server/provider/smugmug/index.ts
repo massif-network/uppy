@@ -1,11 +1,12 @@
 import crypto from 'node:crypto'
 import type { Readable } from 'node:stream'
-import got, { type Got } from 'got'
+import got, { type Got, HTTPError } from 'got'
 import OAuth from 'oauth-1.0a'
 import type { ProviderOptions } from '../../../schemas/companion.js'
 import type { GrantResponse } from '../../../types/express.js'
 import { isRecord } from '../../helpers/type-guards.js'
 import { prepareStream } from '../../helpers/utils.js'
+import logger from '../../logger.js'
 import Provider, {
   type CompanionLike,
   type ProviderListResponse,
@@ -55,6 +56,11 @@ type ImageResponse = {
     Image?: { ArchivedUri?: string; ArchivedSize?: number }
   }
 }
+
+// `image:<ImageKey>` ids are stored by the adapter; CDN downloads and metadata
+// lookups both want the bare key.
+const toImageKey = (id: string): string =>
+  id.startsWith('image:') ? id.slice('image:'.length) : id
 
 const getConsumer = (companion: CompanionWithOptions): Consumer => {
   const opts = companion.options.providerOptions?.['smugmug']
@@ -135,6 +141,56 @@ const apiGetCursor = async <T>(client: Got, cursor: string): Promise<T> =>
       responseType: 'json',
     })
     .json<T>()
+
+/**
+ * Run `fn`, retrying on SmugMug 429 rate-limit responses with backoff. Honours a
+ * `Retry-After` header (seconds or HTTP-date) when present, otherwise falls back
+ * to exponential backoff, capped at 30s per wait. Mirrors the Dropbox provider.
+ */
+const withRateLimitRetry = async <T>(
+  fn: () => Promise<T>,
+  tag: string,
+): Promise<T> => {
+  const maxRetries = 3
+  const maxWaitTime = 30000 // 30 seconds in milliseconds
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      const isLastAttempt = attempt === maxRetries - 1
+      if (
+        !(error instanceof HTTPError) ||
+        error.response.statusCode !== 429 ||
+        isLastAttempt
+      ) {
+        throw error
+      }
+
+      const retryAfter = error.response.headers['retry-after']
+      logger.warn(
+        `SmugMug API rate limit hit with retry-after ${retryAfter}. Retrying attempt ${attempt + 1} of ${maxRetries}...`,
+        tag,
+      )
+
+      let waitTime: number
+      if (typeof retryAfter === 'string') {
+        // Retry-After can be in seconds (integer) or HTTP date format.
+        waitTime = /^\d+$/.test(retryAfter)
+          ? parseInt(retryAfter, 10) * 1000
+          : new Date(retryAfter).getTime() - Date.now()
+      } else {
+        // No Retry-After header, use exponential backoff: 1s, 2s, 4s, ...
+        waitTime = 1000 * 2 ** attempt
+      }
+
+      // Clamp to [0, maxWaitTime] before sleeping.
+      waitTime = Math.min(Math.max(0, waitTime), maxWaitTime)
+      await new Promise((resolve) => setTimeout(resolve, waitTime))
+    }
+  }
+  return undefined as T
+}
 
 /**
  * SmugMug provider.
@@ -238,9 +294,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
           token: providerUserSession.accessToken,
           tokenSecret: providerUserSession.accessTokenSecret,
         })
-        const imageKey = id.startsWith('image:')
-          ? id.slice('image:'.length)
-          : id
+        const imageKey = toImageKey(id)
 
         // Resolve the original file URL, then stream the bytes (both OAuth1-signed).
         const meta = await apiGet<ImageResponse>(client, `image/${imageKey}`, {
@@ -254,6 +308,45 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         const stream = client.stream.get(image.ArchivedUri)
         const { size } = await prepareStream(stream)
         return { stream, size: size ?? image.ArchivedSize }
+      },
+    )
+  }
+
+  /**
+   * Get metadata for a single image.
+   *
+   * `image/<ImageKey>!metadata` returns the EXIF/IPTC payload (camera make/model,
+   * exposure, aperture, ISO, focal length, lens, GPS, copyright, …).
+   */
+  override async getFileMetadata({
+    fileId,
+    providerUserSession,
+    companion,
+  }: {
+    fileId: string
+    providerUserSession: SmugMugUserSession
+    companion: CompanionWithOptions
+  }): Promise<unknown> {
+    return this.#withErrorHandling(
+      'provider.smugmug.getFileMetadata.error',
+      async () => {
+        const client = getClient({
+          consumer: getConsumer(companion),
+          token: providerUserSession.accessToken,
+          tokenSecret: providerUserSession.accessTokenSecret,
+        })
+        const imageKey = toImageKey(fileId)
+
+        const metadata = await withRateLimitRetry(
+          () =>
+            apiGet<{ Response?: { ImageMetadata?: unknown } }>(
+              client,
+              `image/${imageKey}!metadata`,
+            ),
+          'provider.smugmug.getFileMetadata.ratelimit',
+        )
+
+        return metadata.Response?.ImageMetadata
       },
     )
   }
