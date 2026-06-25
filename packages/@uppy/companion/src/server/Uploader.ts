@@ -38,7 +38,16 @@ const PROTOCOLS = Object.freeze({
   multipart: 'multipart',
   s3Multipart: 's3-multipart',
   tus: 'tus',
+  // Mux direct uploads: a Google Cloud Storage resumable session driven by
+  // chunked PUTs with `Content-Range` (the "UpChunk" protocol). Not tus.
+  mux: 'mux',
 })
+
+// Google Cloud Storage resumable uploads require every chunk except the final
+// one to be a multiple of 256 KiB.
+const MUX_CHUNK_MULTIPLE = 256 * 1024
+const MUX_DEFAULT_CHUNK_SIZE = 16 * 1024 * 1024
+const MUX_MAX_CHUNK_RETRIES = 5
 
 type UploadProtocol = (typeof PROTOCOLS)[keyof typeof PROTOCOLS]
 
@@ -342,6 +351,8 @@ export default class Uploader {
         return this.#uploadS3Multipart(stream, req)
       case PROTOCOLS.tus:
         return this.#uploadTus(stream)
+      case PROTOCOLS.mux:
+        return this.#uploadMux(stream)
       default:
         throw new Error('Invalid protocol')
     }
@@ -507,7 +518,8 @@ export default class Uploader {
       if (
         protocolValue === PROTOCOLS.multipart ||
         protocolValue === PROTOCOLS.s3Multipart ||
-        protocolValue === PROTOCOLS.tus
+        protocolValue === PROTOCOLS.tus ||
+        protocolValue === PROTOCOLS.mux
       ) {
         protocol = protocolValue
       } else {
@@ -765,6 +777,146 @@ export default class Uploader {
     }
 
     return tusRet
+  }
+
+  /**
+   * Upload the file to a Mux direct-upload URL.
+   *
+   * A Mux upload URL is a Google Cloud Storage resumable session: the file is
+   * sent as a sequence of `PUT`s, each carrying a `Content-Range` that includes
+   * the total size. GCS replies `308` (resume incomplete) for every chunk until
+   * the final byte arrives, then `200`/`201`. The total size must be known up
+   * front — for non-streamable providers `uploadStream` has already downloaded
+   * the file and set `this.size`; for streamable ones it comes from the
+   * provider's reported size.
+   */
+  async #uploadMux(stream: NodeReadableStream): Promise<UploadResult> {
+    const { uploadUrl } = this.options
+    if (!uploadUrl) {
+      throw new Error('No Mux upload URL set')
+    }
+    if (this.size == null || this.size <= 0) {
+      throw new Error('Mux upload requires a known, non-zero file size')
+    }
+    const totalSize = this.size
+
+    const getRespObj = (
+      response: Response<string>,
+    ): UploadExtraDataResponse => {
+      const {
+        'set-cookie': _deleted,
+        'set-cookie2': _deleted2,
+        ...headers
+      } = response.headers
+      return {
+        responseText: response.body,
+        status: response.statusCode,
+        statusText: response.statusMessage,
+        headers,
+      }
+    }
+
+    const desired = this.options.chunkSize || MUX_DEFAULT_CHUNK_SIZE
+    const chunkSize = Math.max(
+      MUX_CHUNK_MULTIPLE,
+      Math.floor(desired / MUX_CHUNK_MULTIPLE) * MUX_CHUNK_MULTIPLE,
+    )
+
+    let offset = 0
+    let lastResponse: Response<string> | undefined
+
+    const putChunk = async (chunk: Buffer): Promise<void> => {
+      const start = offset
+      const end = offset + chunk.length - 1
+      const contentRange = `bytes ${start}-${end}/${totalSize}`
+
+      let attempt = 0
+      // Retry transient failures (network errors and 5xx/429). Re-sending the
+      // same byte range to a GCS resumable session is safe.
+      for (;;) {
+        attempt += 1
+        try {
+          const reqOptions: OptionsOfTextResponseBody = {
+            body: chunk,
+            headers: {
+              'content-length': `${chunk.length}`,
+              'content-range': contentRange,
+            },
+            throwHttpErrors: false,
+            responseType: 'text',
+            resolveBodyOnly: false,
+            isStream: false,
+            retry: { limit: 0 },
+          }
+          const response = await got.put(uploadUrl, reqOptions)
+
+          const { statusCode } = response
+          // 308 = resume incomplete (every chunk but the last).
+          // 200/201 = the session is complete (final chunk).
+          if (statusCode === 308 || statusCode === 200 || statusCode === 201) {
+            lastResponse = response
+            return
+          }
+          if (statusCode >= 500 || statusCode === 429) {
+            throw new Error(`Mux upload chunk failed with status ${statusCode}`)
+          }
+          // 4xx (other than 429) is a hard, non-retryable rejection.
+          throw Object.assign(
+            new Error(`Mux upload rejected with status ${statusCode}`),
+            { extraData: getRespObj(response) },
+          )
+        } catch (err) {
+          if (this.#canceled) throw err
+          // Only retry transient errors: ones we threw above carry no extraData.
+          const isHardReject = isRecord(err) && 'extraData' in err
+          if (isHardReject || attempt > MUX_MAX_CHUNK_RETRIES) throw err
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1000))
+        }
+      }
+    }
+
+    let buffer: Buffer = Buffer.alloc(0)
+    for await (const data of stream as AsyncIterable<Buffer>) {
+      if (this.#canceled) throw new Error('Canceled')
+      buffer = buffer.length === 0 ? data : Buffer.concat([buffer, data])
+      while (buffer.length >= chunkSize) {
+        const chunk = buffer.subarray(0, chunkSize)
+        buffer = buffer.subarray(chunkSize)
+        await putChunk(chunk)
+        offset += chunk.length
+        this.onProgress(offset, totalSize)
+      }
+    }
+    // Flush the trailing bytes as the final (sub-chunk-size) chunk.
+    if (buffer.length > 0) {
+      await putChunk(buffer)
+      offset += buffer.length
+      this.onProgress(offset, totalSize)
+    }
+
+    if (offset !== totalSize) {
+      const errMsg = `Mux upload sent ${offset} of ${totalSize} bytes`
+      logger.error(errMsg, 'upload.mux.mismatch.error')
+      throw new Error(errMsg)
+    }
+    if (
+      !lastResponse ||
+      (lastResponse.statusCode !== 200 && lastResponse.statusCode !== 201)
+    ) {
+      throw new Error(
+        `Mux upload did not complete (last status ${lastResponse?.statusCode ?? 'none'})`,
+      )
+    }
+
+    // Mux's PUT response carries no useful asset URL — the upload is tracked by
+    // its upload id on the app side. Surface the raw response for the client.
+    return {
+      url: null,
+      extraData: {
+        response: getRespObj(lastResponse),
+        bytesUploaded: offset,
+      },
+    }
   }
 
   async #uploadMultipart(stream: NodeReadableStream): Promise<UploadResult> {
