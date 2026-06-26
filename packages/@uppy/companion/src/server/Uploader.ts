@@ -344,6 +344,12 @@ export default class Uploader {
   ): Promise<UploadResult> {
     const protocol = this._getUploadProtocol()
 
+    logger.info(
+      `MUX_DEBUG selected protocol=${protocol} hasUploadUrl=${!!this.options.uploadUrl} hasEndpoint=${!!this.options.endpoint} size=${this.size} canStream=${this._canStream()}`,
+      'mux.debug',
+      this.shortToken,
+    )
+
     switch (protocol) {
       case PROTOCOLS.multipart:
         return this.#uploadMultipart(stream)
@@ -549,6 +555,11 @@ export default class Uploader {
       typeof chunkSizeValue === 'number' ? chunkSizeValue : undefined
 
     const storage = redis.client()
+
+    logger.info(
+      `MUX_DEBUG reqToOptions received protocol=${String(protocol)} uploadUrl=${String(uploadUrl).slice(0, 70)} endpoint=${String(endpoint).slice(0, 70)}`,
+      'mux.debug',
+    )
 
     return {
       // Client provided info (must be validated and not blindly trusted):
@@ -825,6 +836,12 @@ export default class Uploader {
     let offset = 0
     let lastResponse: Response<string> | undefined
 
+    logger.info(
+      `MUX_DEBUG uploadMux start url=${uploadUrl.slice(0, 90)} totalSize=${totalSize} chunkSize=${chunkSize}`,
+      'mux.debug',
+      this.shortToken,
+    )
+
     const putChunk = async (chunk: Buffer): Promise<void> => {
       const start = offset
       const end = offset + chunk.length - 1
@@ -851,6 +868,11 @@ export default class Uploader {
           const response = await got.put(uploadUrl, reqOptions)
 
           const { statusCode } = response
+          logger.info(
+            `MUX_DEBUG PUT range=${contentRange} status=${statusCode} body=${String(response.body ?? '').slice(0, 200)}`,
+            'mux.debug',
+            this.shortToken,
+          )
           // 308 = resume incomplete (every chunk but the last).
           // 200/201 = the session is complete (final chunk).
           if (statusCode === 308 || statusCode === 200 || statusCode === 201) {
@@ -893,6 +915,12 @@ export default class Uploader {
       offset += buffer.length
       this.onProgress(offset, totalSize)
     }
+
+    logger.info(
+      `MUX_DEBUG uploadMux done offset=${offset}/${totalSize} finalStatus=${lastResponse?.statusCode}`,
+      'mux.debug',
+      this.shortToken,
+    )
 
     if (offset !== totalSize) {
       const errMsg = `Mux upload sent ${offset} of ${totalSize} bytes`
