@@ -337,6 +337,89 @@ describe('uploader', () => {
     })
   })
 
+  test('upload functions with mux protocol (single chunk)', async () => {
+    const fileContent = Buffer.from('Some mux video bytes')
+    let receivedRange: string | undefined
+    nock('http://localhost')
+      .put('/mux-upload/session')
+      .reply(function reply() {
+        receivedRange = this.req.headers['content-range'] as string | undefined
+        return [200, 'OK']
+      })
+
+    const stream = Readable.from([fileContent])
+    stream.pause()
+    const uploader = new Uploader({
+      companionOptions: { ...companionOptions, streamingUpload: true },
+      uploadUrl: 'http://localhost/mux-upload/session',
+      protocol: 'mux',
+      size: fileContent.length,
+      metadata: { name: 'video.mp4', type: 'video/mp4' },
+      pathPrefix,
+    })
+    const ret = await uploader.uploadStream(stream, requireMockReq())
+
+    expect(ret).toMatchObject({
+      url: null,
+      extraData: { bytesUploaded: fileContent.length },
+    })
+    expect(receivedRange).toBe(
+      `bytes 0-${fileContent.length - 1}/${fileContent.length}`,
+    )
+  })
+
+  test('upload functions with mux protocol (multiple chunks)', async () => {
+    const chunkSize = 256 * 1024
+    const fileContent = Buffer.alloc(chunkSize + 10, 1)
+    const ranges: (string | undefined)[] = []
+    nock('http://localhost')
+      .put('/mux-upload/session')
+      .reply(function reply() {
+        ranges.push(this.req.headers['content-range'] as string | undefined)
+        return [308, '']
+      })
+      .put('/mux-upload/session')
+      .reply(function reply() {
+        ranges.push(this.req.headers['content-range'] as string | undefined)
+        return [200, 'OK']
+      })
+
+    const stream = Readable.from([fileContent])
+    stream.pause()
+    const uploader = new Uploader({
+      companionOptions: { ...companionOptions, streamingUpload: true },
+      uploadUrl: 'http://localhost/mux-upload/session',
+      protocol: 'mux',
+      size: fileContent.length,
+      chunkSize,
+      metadata: { name: 'video.mp4', type: 'video/mp4' },
+      pathPrefix,
+    })
+    const ret = await uploader.uploadStream(stream, requireMockReq())
+
+    expect(ret).toMatchObject({
+      url: null,
+      extraData: { bytesUploaded: fileContent.length },
+    })
+    expect(ranges).toEqual([
+      `bytes 0-${chunkSize - 1}/${fileContent.length}`,
+      `bytes ${chunkSize}-${fileContent.length - 1}/${fileContent.length}`,
+    ])
+  })
+
+  test('mux protocol requires an upload destination', () => {
+    expect(
+      () =>
+        new Uploader({
+          companionOptions,
+          protocol: 'mux',
+          size: 1,
+          metadata: { name: 'video.mp4' },
+          pathPrefix,
+        }),
+    ).toThrow(new ValidationError('no destination specified'))
+  })
+
   test('header companion option gets passed along to destination endpoint', async () => {
     nock('http://localhost')
       .post('/')
