@@ -11,6 +11,8 @@ import * as logger from './logger.js'
 import { isOAuthProvider } from './provider/Provider.js'
 import getS3Client from './s3-client.js'
 
+const probeResponseHeaders = ['content-range']
+
 export const hasSessionAndProvider: RequestHandler = (req, res, next) => {
   if (!req.session) {
     logger.debug(
@@ -195,6 +197,10 @@ export const cors =
         ?.map((method) => method.trim().toLowerCase()),
     )
 
+    for (const header of probeResponseHeaders) {
+      exposeHeadersSet.add(header)
+    }
+
     const sendSelfEndpoint = options['sendSelfEndpoint']
     if (sendSelfEndpoint != null) {
       exposeHeadersSet.add('i-am')
@@ -208,6 +214,8 @@ export const cors =
       'origin',
       'content-type',
       'accept',
+      'range',
+      'x-request-id',
     ]
     const existingAllowHeaders = res.get('Access-Control-Allow-Headers')
     const allowHeadersSet = new Set(

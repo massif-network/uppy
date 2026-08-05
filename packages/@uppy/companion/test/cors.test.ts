@@ -49,9 +49,11 @@ describe('cors', () => {
         'PATCH,OPTIONS,POST,GET,DELETE',
       )
       expect(headers['access-control-allow-headers']).toBe(
-        'test-allow-header,uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept',
+        'test-allow-header,uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept,range,x-request-id',
       )
-      expect(headers['access-control-expose-headers']).toBe('test,i-am')
+      expect(headers['access-control-expose-headers']).toBe(
+        'test,content-range,i-am',
+      )
       expect(headers['content-length']).toBe('0')
     })
   })
@@ -67,8 +69,9 @@ describe('cors', () => {
         'GET,POST,OPTIONS,DELETE',
       )
       expect(headers['access-control-allow-headers']).toBe(
-        'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept',
+        'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept,range,x-request-id',
       )
+      expect(headers['access-control-expose-headers']).toBe('content-range')
       expect(headers['content-length']).toBe('0')
     })
   })
@@ -89,7 +92,7 @@ describe('cors', () => {
           'GET,POST,OPTIONS,DELETE',
         )
         expect(headers['access-control-allow-headers']).toBe(
-          'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept',
+          'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept,range,x-request-id',
         )
         expect(headers['content-length']).toBe('0')
       },
@@ -111,7 +114,7 @@ describe('cors', () => {
         'GET,POST,OPTIONS,DELETE',
       )
       expect(headers['access-control-allow-headers']).toBe(
-        'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept',
+        'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept,range,x-request-id',
       )
       expect(headers['content-length']).toBe('0')
     })

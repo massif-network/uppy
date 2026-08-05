@@ -5,7 +5,10 @@ import type { ProviderListResponse } from '../Provider.js'
 // SmugMug API v2 response shapes (only the fields we consume).
 // Docs: https://api.smugmug.com/api/v2/doc/index.html
 
-type SmugMugRef = { Uri?: string }
+export type SmugMugRef = string | { Uri?: string }
+
+export const getUri = (ref: SmugMugRef | undefined): string | undefined =>
+  typeof ref === 'string' ? ref : ref?.Uri
 
 export type SmugMugNode = {
   Name?: string
@@ -29,9 +32,11 @@ export type SmugMugAlbumImage = {
   FileName?: string
   ImageKey?: string
   ArchivedSize?: number
+  ArchivedMD5?: string
   IsVideo?: boolean
   ThumbnailUrl?: string
   DateTimeUploaded?: string
+  LastUpdated?: string
 }
 
 export type SmugMugAlbumImagesResponse = {
@@ -61,7 +66,7 @@ const getNextPagePath = (
 // An Album node references its album as `/api/v2/album/<AlbumKey>`; pull the key out
 // so we can hit the `!images` endpoint when the user opens it.
 const getAlbumKey = (node: SmugMugNode): string | undefined => {
-  const uri = node.Uris?.Album?.Uri
+  const uri = getUri(node.Uris?.Album)
   if (!uri) return undefined
   return uri.split('/').pop() || undefined
 }
@@ -138,7 +143,7 @@ export function adaptAlbumImages(
         mimeType: typeof mimeType === 'string' ? mimeType : null,
         id: requestPath,
         requestPath,
-        modifiedDate: image.DateTimeUploaded,
+        modifiedDate: image.LastUpdated,
         // Approach A: hand the SmugMug CDN thumbnail straight to the client.
         thumbnail: image.ThumbnailUrl,
         size: image.ArchivedSize ?? null,
