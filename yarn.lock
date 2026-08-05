@@ -8567,6 +8567,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/express-serve-static-core@npm:5.1.3":
+  version: 5.1.3
+  resolution: "@types/express-serve-static-core@npm:5.1.3"
+  dependencies:
+    "@types/node": "npm:*"
+    "@types/qs": "npm:*"
+    "@types/range-parser": "npm:*"
+    "@types/send": "npm:*"
+  checksum: 10/455822d3269510d3fd45fba7c1e5d4d6de7a1b9767d8afcce5a1ff9ab9743df01db471a6ba1510a1acf3c970a7b31fd26ee99a245e297acae2f66cf6231c86b7
+  languageName: node
+  linkType: hard
+
 "@types/express-serve-static-core@npm:^4.17.21, @types/express-serve-static-core@npm:^4.17.33":
   version: 4.19.6
   resolution: "@types/express-serve-static-core@npm:4.19.6"
@@ -9134,6 +9146,7 @@ __metadata:
     "@types/cookie-parser": "npm:1.4.10"
     "@types/cors": "npm:2.8.6"
     "@types/eslint": "npm:9.6.1"
+    "@types/express-serve-static-core": "npm:5.1.3"
     "@types/express-session": "npm:1.19.0"
     "@types/http-proxy": "npm:1.17.17"
     "@types/jsonwebtoken": "npm:9.0.10"

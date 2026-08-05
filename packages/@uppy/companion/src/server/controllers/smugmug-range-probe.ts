@@ -1,7 +1,7 @@
 import type { Readable } from 'node:stream'
 import type { Request, RequestHandler, Response } from 'express'
 import { type SmugMugUserSession } from '../provider/smugmug/index.js'
-import { mintSourceToken, validateSourceToken } from '../helpers/source-token.js'
+import { deriveUserHash, mintSourceToken, validateSourceToken } from '../helpers/source-token.js'
 import SmugMug, { SmugMugProbeError } from '../provider/smugmug/index.js'
 
 const DEFAULT_MAX_PROBE_BYTES = 64 * 1024
@@ -307,12 +307,13 @@ export async function smugMugSourcePrepare(
       DEFAULT_CHUNK_MAX,
     )
 
-    // Mint a source token for the bytes endpoint
+    // Mint a source token for the bytes endpoint, bound to this user session
     const secret = req.companion.options.secret
     const sourceToken = mintSourceToken({
       secret,
       sourceId: body.source_id,
       sourceVersion: source.sourceVersion,
+      userHash: deriveUserHash(providerUserSession.accessToken),
       chunkMax,
     })
 
@@ -380,7 +381,20 @@ export async function smugMugSourceBytes(
     return
   }
 
-  const lifecycle = createProbeLifecycle(req, res, () => {})
+  // Verify token was minted for this authenticated user session
+  const sessionForBinding = req.companion.providerUserSession as SmugMugUserSession | undefined
+  if (
+    !sessionForBinding?.accessToken ||
+    tokenPayload.user_hash !== deriveUserHash(sessionForBinding.accessToken)
+  ) {
+    res.status(401).json({ message: 'Source token does not match this session' })
+    return
+  }
+
+  let upstreamStream: Readable | undefined
+  const destroyUpstreamOnce = destroyStreamOnce(() => upstreamStream)
+  const lifecycle = createProbeLifecycle(req, res, destroyUpstreamOnce)
+  let streaming = false
   try {
     // OAuth session is already verified by middlewares.hasSessionAndProvider + verifyToken
     const providerUserSession = req.companion.providerUserSession as SmugMugUserSession | undefined
@@ -427,8 +441,24 @@ export async function smugMugSourceBytes(
       ...range,
       signal: lifecycle.signal,
     })
+    upstreamStream = upstream.stream
 
-    if (lifecycle.signal.aborted) return
+    if (lifecycle.signal.aborted) {
+      destroyUpstreamOnce()
+      return
+    }
+
+    const onUpstreamError = () => {
+      destroyUpstreamOnce()
+      if (!res.headersSent) {
+        res.status(502).json({ message: 'SmugMug source stream failed' })
+      } else {
+        res.destroy()
+      }
+      lifecycle.cleanup()
+    }
+    upstream.stream.once('error', onUpstreamError)
+    res.once('finish', () => upstream.stream.off('error', onUpstreamError))
 
     res.set({
       'Cache-Control': 'no-store',
@@ -440,6 +470,7 @@ export async function smugMugSourceBytes(
       'Accept-Ranges': source.metadata.acceptRanges || '',
       'X-Massif-Source-Version': source.sourceVersion,
     }).status(206)
+    streaming = true
     upstream.stream.pipe(res)
   } catch (error) {
     if (!lifecycle.signal.aborted && !res.headersSent) {
@@ -451,6 +482,6 @@ export async function smugMugSourceBytes(
       res.status(502).json({ message: 'Failed to fetch source bytes' })
     }
   } finally {
-    lifecycle.cleanup()
+    if (!streaming) lifecycle.cleanup()
   }
 }

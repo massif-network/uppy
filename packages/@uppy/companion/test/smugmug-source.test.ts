@@ -103,6 +103,30 @@ describe('GET /smugmug/source/:id/bytes', () => {
     await request(server).get('/smugmug/source/image:test/bytes').set('Range', 'bytes=0-9').set('uppy-source-token', 'invalid').set('uppy-auth-token', token).expect(401)
   })
 
+  test('returns 401 when the source token was minted for another session', async () => {
+    mockSmugMugFull()
+    const server = await getProbeServer()
+    const token = createValidToken()
+
+    const prepareRes = await request(server)
+      .post('/smugmug/source/prepare')
+      .set('uppy-auth-token', token)
+      .send({ source_id: 'image:test-image-1' })
+      .expect(200)
+
+    const otherSessionToken = tokenService.generateEncryptedAuthToken(
+      { smugmug: { accessToken: 'other-access-token', accessTokenSecret: 'other-secret' } },
+      companionSecret,
+    )
+
+    await request(server)
+      .get('/smugmug/source/image:test-image-1/bytes')
+      .set('Range', 'bytes=0-9')
+      .set('uppy-source-token', prepareRes.body.source_token)
+      .set('uppy-auth-token', otherSessionToken)
+      .expect(401)
+  })
+
   test('returns 206 with valid source token - full roundtrip', async () => {
     mockSmugMugFull()  // Mock for prepare
     const server = await getProbeServer()

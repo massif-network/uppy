@@ -49,10 +49,10 @@ describe('cors', () => {
         'PATCH,OPTIONS,POST,GET,DELETE',
       )
       expect(headers['access-control-allow-headers']).toBe(
-        'test-allow-header,uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept,range,x-request-id',
+        'test-allow-header,uppy-auth-token,uppy-credentials-params,uppy-source-token,authorization,origin,content-type,accept,range,x-request-id',
       )
       expect(headers['access-control-expose-headers']).toBe(
-        'test,content-range,i-am',
+        'test,content-range,content-length,accept-ranges,etag,last-modified,retry-after,x-ratelimit-remaining,x-ratelimit-reset,x-massif-source-version,i-am',
       )
       expect(headers['content-length']).toBe('0')
     })
@@ -69,9 +69,11 @@ describe('cors', () => {
         'GET,POST,OPTIONS,DELETE',
       )
       expect(headers['access-control-allow-headers']).toBe(
-        'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept,range,x-request-id',
+        'uppy-auth-token,uppy-credentials-params,uppy-source-token,authorization,origin,content-type,accept,range,x-request-id',
       )
-      expect(headers['access-control-expose-headers']).toBe('content-range')
+      expect(headers['access-control-expose-headers']).toBe(
+        'content-range,content-length,accept-ranges,etag,last-modified,retry-after,x-ratelimit-remaining,x-ratelimit-reset,x-massif-source-version',
+      )
       expect(headers['content-length']).toBe('0')
     })
   })
@@ -92,7 +94,7 @@ describe('cors', () => {
           'GET,POST,OPTIONS,DELETE',
         )
         expect(headers['access-control-allow-headers']).toBe(
-          'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept,range,x-request-id',
+          'uppy-auth-token,uppy-credentials-params,uppy-source-token,authorization,origin,content-type,accept,range,x-request-id',
         )
         expect(headers['content-length']).toBe('0')
       },
@@ -114,7 +116,7 @@ describe('cors', () => {
         'GET,POST,OPTIONS,DELETE',
       )
       expect(headers['access-control-allow-headers']).toBe(
-        'uppy-auth-token,uppy-credentials-params,authorization,origin,content-type,accept,range,x-request-id',
+        'uppy-auth-token,uppy-credentials-params,uppy-source-token,authorization,origin,content-type,accept,range,x-request-id',
       )
       expect(headers['content-length']).toBe('0')
     })
