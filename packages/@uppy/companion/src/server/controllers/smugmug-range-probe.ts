@@ -246,7 +246,6 @@ export default async function smugMugRangeProbe(
 // ============================================================================
 
 export type PrepareRequest = {
-  source_token: string // OAuth access token for the source
   source_id: string   // Image ID (e.g., "image:ABC123")
 }
 
@@ -257,6 +256,7 @@ export type PrepareResponse = {
   content_type: string
   accept_ranges: boolean
   chunk_max: number
+  source_token: string  // HMAC token for bytes endpoint
 }
 
 const DEFAULT_CHUNK_MAX = 64 * 1024
@@ -279,18 +279,18 @@ export async function smugMugSourcePrepare(
     return
   }
 
-  if (!body.source_token || !body.source_id) {
-    res.status(400).json({ message: 'source_token and source_id are required' })
+  if (!body.source_id) {
+    res.status(400).json({ message: 'source_id is required' })
     return
   }
 
   const lifecycle = createProbeLifecycle(req, res, () => {})
   try {
-    // Use the provided OAuth token for the request
-    const tokenPayload = JSON.parse(Buffer.from(body.source_token.split('.')[1] || '', 'base64').toString()) as { accessToken?: string; accessTokenSecret?: string }
-    const providerUserSession = {
-      accessToken: tokenPayload.accessToken || body.source_token,
-      accessTokenSecret: tokenPayload.accessTokenSecret,
+    // Get OAuth token from the existing authenticated session
+    const providerUserSession = req.companion.providerUserSession as SmugMugUserSession | undefined
+    if (!providerUserSession?.accessToken) {
+      res.status(401).json({ message: 'No authenticated session' })
+      return
     }
 
     const source = await provider.getProbeSource({
@@ -307,6 +307,15 @@ export async function smugMugSourcePrepare(
       DEFAULT_CHUNK_MAX,
     )
 
+    // Mint a source token for the bytes endpoint
+    const secret = req.companion.options.secret
+    const sourceToken = mintSourceToken({
+      secret,
+      sourceId: body.source_id,
+      sourceVersion: source.sourceVersion,
+      chunkMax,
+    })
+
     const response: PrepareResponse = {
       source_version: source.sourceVersion,
       size: source.metadata.size,
@@ -314,6 +323,7 @@ export async function smugMugSourcePrepare(
       content_type: source.metadata.mimeType,
       accept_ranges: source.metadata.acceptRanges === 'bytes',
       chunk_max: chunkMax,
+      source_token: sourceToken,  // Token for bytes endpoint
     }
 
     res.set({
@@ -372,25 +382,8 @@ export async function smugMugSourceBytes(
 
   const lifecycle = createProbeLifecycle(req, res, () => {})
   try {
-    // We need the OAuth token from somewhere - for now, require it as a header
-    // In production, this would come from the ephemeral grant bridge
-    const oauthToken = req.header('uppy-auth-token')
-    let providerUserSession: SmugMugUserSession | undefined
-    
-    if (oauthToken) {
-      // Decode the OAuth token from the header
-      try {
-        const tokenService = await import('../helpers/jwt.js')
-        const payload = tokenService.verifyEncryptedAuthToken(
-          oauthToken,
-          secret,
-          'smugmug',
-        ) as { smugmug?: SmugMugUserSession }
-        providerUserSession = payload.smugmug
-      } catch {
-        // Invalid OAuth token - continue without auth, may fail on private images
-      }
-    }
+    // OAuth session is already verified by middlewares.hasSessionAndProvider + verifyToken
+    const providerUserSession = req.companion.providerUserSession as SmugMugUserSession | undefined
 
     const source = await provider.getProbeSource({
       id: sourceId,
