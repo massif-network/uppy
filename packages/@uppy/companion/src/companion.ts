@@ -290,7 +290,7 @@ export function app(optionsArg: CompanionInitOptions) {
   }
   // Phase 1: Production SmugMug source API (always enabled)
   app.post(
-    '/smugmug/source/prepare',
+    '/:providerName/source/prepare',
     express.json(),
     middlewares.hasSessionAndProvider,
     middlewares.verifyToken,
@@ -298,7 +298,9 @@ export function app(optionsArg: CompanionInitOptions) {
     controllers.smugMugSourcePrepare,
   )
   app.get(
-    '/smugmug/source/:id/bytes',
+    '/:providerName/source/:id/bytes',
+    middlewares.hasSessionAndProvider,
+    middlewares.verifyToken,
     requireSmugMugRangeProbeProvider,
     controllers.smugMugSourceBytes,
   )
