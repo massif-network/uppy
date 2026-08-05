@@ -29,7 +29,7 @@ const PAGE_SIZE = 100
 
 // SmugMug is OAuth 1.0a: there's no Bearer token. Every request is signed with the
 // consumer (app) key/secret plus the user's access token/secret.
-type SmugMugUserSession = {
+export type SmugMugUserSession = {
   accessToken: string
   accessTokenSecret?: string
 }
@@ -122,7 +122,7 @@ const toImageKey = (id: string): string => {
   if (match == null) {
     throw new SmugMugProbeError('SmugMug image id is invalid', 400)
   }
-  return match[1]
+  return match[1]!
 }
 const getHeader = (
   headers: Record<string, string | string[] | undefined>,
@@ -437,7 +437,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         image?.Uri == null ||
         image.ImageKey == null ||
         !Number.isSafeInteger(image.Serial) ||
-        image.Serial < 0 ||
+        image.Serial! < 0 ||
         image.LastUpdated == null ||
         imageSizeDetailsUri == null
       ) {
@@ -456,7 +456,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
       const original = imageSizeDetails.Response?.ImageSizeDetails
         ?.ImageSizeOriginal
       const size = original?.Size ?? image.ArchivedSize
-      if (!Number.isSafeInteger(size) || size <= 0) {
+      if (!Number.isSafeInteger(size) || size! <= 0) {
         throw new SmugMugProbeError(
           'SmugMug original metadata is incomplete',
           502,
@@ -498,13 +498,13 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
       return {
         originalUrl,
         metadata: {
-          canonicalUri: image.Uri,
-          imageKey: image.ImageKey,
-          serial: image.Serial,
+          canonicalUri: image.Uri!,
+          imageKey: image.ImageKey!,
+          serial: image.Serial!,
           archivedSize: image.ArchivedSize,
           archivedMd5: image.ArchivedMD5,
-          lastUpdated: image.LastUpdated,
-          size,
+          lastUpdated: image.LastUpdated!,
+          size: size!,
           mimeType: getProbeMimeType(
             original?.MimeType ?? getHeader(head.headers, 'content-type'),
           ),
@@ -588,7 +588,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
       return {
         stream,
         contentRange,
-        contentLength: expectedContentLength,
+        contentLength: expectedContentLength as number,
         mimeType: getProbeMimeType(
           getHeader(response.headers, 'content-type') ??
           source.metadata.mimeType,
@@ -600,8 +600,6 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
       throw new SmugMugProbeError('SmugMug range request failed', 502)
     }
   }
-
-  override async download
 
   override async download({
     id,
