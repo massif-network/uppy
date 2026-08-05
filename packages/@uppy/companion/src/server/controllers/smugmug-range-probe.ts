@@ -109,6 +109,10 @@ const createProbeLifecycle = (
   return { signal: abortController.signal, cleanup }
 }
 
+export const isSmugMugAuthenticatedRangeProbeEnabled = (): boolean =>
+  process.env['COMPANION_SMUGMUG_AUTH_RANGE_PROBE'] === 'true' &&
+  process.env['NODE_ENV'] !== 'production'
+
 const sendError = (res: Response, error: unknown): void => {
   if (error instanceof ProbeRequestError || error instanceof SmugMugProbeError) {
     res.status(error.statusCode).json({ message: error.message })
@@ -156,6 +160,7 @@ export async function smugMugRangeProbeMetadata(
   try {
     const source = await request.provider.getProbeSource({
       id: request.id,
+      providerUserSession: req.companion.providerUserSession,
       companion: req.companion,
       signal: lifecycle.signal,
     })
@@ -182,6 +187,7 @@ export default async function smugMugRangeProbe(
     const range = parseRange(req.header('Range'))
     const source = await request.provider.getProbeSource({
       id: request.id,
+      providerUserSession: req.companion.providerUserSession,
       companion: req.companion,
       signal: lifecycle.signal,
     })
@@ -193,6 +199,8 @@ export default async function smugMugRangeProbe(
     }
 
     const upstream = await request.provider.openProbeRange({
+      companion: req.companion,
+      providerUserSession: req.companion.providerUserSession,
       source,
       ...range,
       signal: lifecycle.signal,

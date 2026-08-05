@@ -406,19 +406,29 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
   async getProbeSource({
     id,
     companion,
+    providerUserSession,
     signal,
   }: {
     id: string
     companion: CompanionWithOptions
+    providerUserSession?: SmugMugUserSession
     signal?: AbortSignal
   }): Promise<SmugMugProbeSource> {
     try {
+      // Use OAuth-signed client when user session is provided, otherwise use public API key.
+      const client = providerUserSession
+        ? getClient({
+            consumer: getConsumer(companion),
+            token: providerUserSession.accessToken,
+            tokenSecret: providerUserSession.accessTokenSecret,
+          })
+        : got.extend({})
       const apiKey = getPublicProbeKey(companion)
       const imageKey = toImageKey(id)
       const imageResponse = await apiGet<ImageResponse>(
-        got,
+        client,
         `image/${imageKey}`,
-        { APIKey: apiKey },
+        providerUserSession ? undefined : { APIKey: apiKey },
         signal,
       )
       const image = imageResponse.Response?.Image
@@ -438,9 +448,9 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
       }
 
       const imageSizeDetails = await apiGetUri<ImageSizeDetailsResponse>(
-        got,
+        client,
         imageSizeDetailsUri,
-        { APIKey: apiKey },
+        providerUserSession ? undefined : { APIKey: apiKey },
         signal,
       )
       const original = imageSizeDetails.Response?.ImageSizeDetails
@@ -453,8 +463,16 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         )
       }
       const originalUrl = getProbeUrl(original?.Url)
-      const protectedGot = getProtectedGot({ allowLocalIPs: false })
-      const head = await protectedGot.head(originalUrl, {
+
+      // When authenticated, we must OAuth-sign the HEAD request to the original URL.
+      const rangeClient = providerUserSession
+        ? getClient({
+            consumer: getConsumer(companion),
+            token: providerUserSession.accessToken,
+            tokenSecret: providerUserSession.accessTokenSecret,
+          })
+        : getProtectedGot({ allowLocalIPs: false })
+      const head = await rangeClient.head(originalUrl, {
         throwHttpErrors: false,
         followRedirect: false,
         ...(signal != null && { signal }),
@@ -505,18 +523,29 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
   }
 
   async openProbeRange({
+    companion,
+    providerUserSession,
     source,
     start,
     end,
     signal,
   }: {
+    companion: CompanionWithOptions
+    providerUserSession?: SmugMugUserSession
     source: SmugMugProbeSource
     start: number
     end: number
     signal?: AbortSignal
   }): Promise<SmugMugProbeRange> {
-    const protectedGot = getProtectedGot({ allowLocalIPs: false })
-    const stream = protectedGot.stream.get(source.originalUrl, {
+    // Use OAuth-signed client when user session is provided, otherwise use public (unsigned) requests.
+    const rangeClient = providerUserSession
+      ? getClient({
+          consumer: getConsumer(companion),
+          token: providerUserSession.accessToken,
+          tokenSecret: providerUserSession.accessTokenSecret,
+        })
+      : getProtectedGot({ allowLocalIPs: false })
+    const stream = rangeClient.stream.get(source.originalUrl, {
       headers: { Range: `bytes=${start}-${end}` },
       throwHttpErrors: false,
       followRedirect: false,
@@ -571,6 +600,8 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
       throw new SmugMugProbeError('SmugMug range request failed', 502)
     }
   }
+
+  override async download
 
   override async download({
     id,

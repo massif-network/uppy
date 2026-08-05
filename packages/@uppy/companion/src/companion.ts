@@ -19,6 +19,7 @@ import googlePicker from './server/controllers/googlePicker.js'
 import * as controllers from './server/controllers/index.js'
 import s3 from './server/controllers/s3.js'
 import {
+  isSmugMugAuthenticatedRangeProbeEnabled,
   isSmugMugRangeProbeEnabled,
   requireSmugMugRangeProbeProvider,
 } from './server/controllers/smugmug-range-probe.js'
@@ -268,6 +269,22 @@ export function app(optionsArg: CompanionInitOptions) {
     app.get(
       '/:providerName/_range-probe/:id',
       requireSmugMugRangeProbeProvider,
+      controllers.smugMugRangeProbe,
+    )
+  }
+  if (isSmugMugAuthenticatedRangeProbeEnabled()) {
+    app.get(
+      '/:providerName/_range-probe-auth/:id/metadata',
+      middlewares.hasSessionAndProvider,
+      requireSmugMugRangeProbeProvider,
+      middlewares.verifyToken,
+      controllers.smugMugRangeProbeMetadata,
+    )
+    app.get(
+      '/:providerName/_range-probe-auth/:id',
+      middlewares.hasSessionAndProvider,
+      requireSmugMugRangeProbeProvider,
+      middlewares.verifyToken,
       controllers.smugMugRangeProbe,
     )
   }
