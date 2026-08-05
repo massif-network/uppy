@@ -4,6 +4,7 @@ import got, { type Got, HTTPError } from 'got'
 import OAuth from 'oauth-1.0a'
 import type { ProviderOptions } from '../../../schemas/companion.js'
 import type { GrantResponse } from '../../../types/express.js'
+import { getProtectedGot } from '../../helpers/request.js'
 import { isRecord } from '../../helpers/type-guards.js'
 import { prepareStream } from '../../helpers/utils.js'
 import logger from '../../logger.js'
@@ -16,8 +17,10 @@ import { withProviderErrorHandling } from '../providerErrors.js'
 import {
   adaptAlbumImages,
   adaptNodeChildren,
+  getUri,
   type SmugMugAlbumImagesResponse,
   type SmugMugNodeChildrenResponse,
+  type SmugMugRef,
 } from './adapter.js'
 
 const API_HOST = 'https://api.smugmug.com'
@@ -53,14 +56,111 @@ type AuthUserResponse = {
 
 type ImageResponse = {
   Response?: {
-    Image?: { ArchivedUri?: string; ArchivedSize?: number }
+    Image?: {
+      Uri?: string
+      ImageKey?: string
+      Serial?: number
+      ArchivedUri?: string
+      ArchivedSize?: number
+      ArchivedMD5?: string
+      LastUpdated?: string
+      Uris?: { ImageSizeDetails?: SmugMugRef }
+    }
   }
+}
+
+type ImageSizeDetailsResponse = {
+  Response?: {
+    ImageSizeDetails?: {
+      ImageSizeOriginal?: {
+        Url?: string
+        Size?: number
+        MimeType?: string
+      }
+    }
+  }
+}
+
+export class SmugMugProbeError extends Error {
+  statusCode: number
+
+  constructor(message: string, statusCode: number) {
+    super(message)
+    this.name = 'SmugMugProbeError'
+    this.statusCode = statusCode
+  }
+}
+
+type SmugMugProbeSource = {
+  originalUrl: string
+  metadata: {
+    canonicalUri: string
+    imageKey: string
+    serial: number
+    archivedSize: number | undefined
+    archivedMd5: string | undefined
+    lastUpdated: string
+    size: number
+    mimeType: string
+    etag: string | undefined
+    lastModified: string | undefined
+    acceptRanges: string | undefined
+  }
+}
+
+export type SmugMugProbeRange = {
+  stream: Readable
+  contentRange: string
+  contentLength: number
+  mimeType: string
 }
 
 // `image:<ImageKey>` ids are stored by the adapter; CDN downloads and metadata
 // lookups both want the bare key.
-const toImageKey = (id: string): string =>
-  id.startsWith('image:') ? id.slice('image:'.length) : id
+const toImageKey = (id: string): string => {
+  const match = /^image:([A-Za-z0-9-]+)$/.exec(id)
+  if (match == null) {
+    throw new SmugMugProbeError('SmugMug image id is invalid', 400)
+  }
+  return match[1]
+}
+const getHeader = (
+  headers: Record<string, string | string[] | undefined>,
+  name: string,
+): string | undefined => {
+  const value = headers[name]
+  return typeof value === 'string' ? value : undefined
+}
+
+const getProbeMimeType = (candidate: string | undefined): string =>
+  candidate != null && /^[\w.+-]+\/[\w.+-]+$/.test(candidate)
+    ? candidate
+    : 'application/octet-stream'
+
+const getProbeUrl = (candidate: string | undefined): string => {
+  if (candidate == null) {
+    throw new SmugMugProbeError(
+      'SmugMug original metadata is unavailable',
+      502,
+    )
+  }
+  try {
+    const url = new URL(candidate)
+    if (
+      url.protocol !== 'https:' ||
+      (url.hostname !== 'photos.smugmug.com' &&
+        !url.hostname.endsWith('.photos.smugmug.com'))
+    ) {
+      throw new Error('untrusted original host')
+    }
+    return url.toString()
+  } catch {
+    throw new SmugMugProbeError(
+      'SmugMug original metadata is unavailable',
+      502,
+    )
+  }
+}
 
 const getConsumer = (companion: CompanionWithOptions): Consumer => {
   const opts = companion.options.providerOptions?.['smugmug']
@@ -119,29 +219,55 @@ const getClient = ({
   })
 }
 
+const getPublicProbeKey = (companion: CompanionWithOptions): string => {
+  const key = companion.options.providerOptions?.['smugmug']?.key
+  if (!key) {
+    throw new SmugMugProbeError(
+      'SmugMug public probe is not configured',
+      503,
+    )
+  }
+  return key
+}
+
 // SmugMug only returns JSON when explicitly asked.
 const apiGet = async <T>(
   client: Got,
   path: string,
   searchParams?: Record<string, string | number>,
+  signal?: AbortSignal,
 ): Promise<T> =>
   client
     .get(`${API_BASE}/${path}`, {
-      searchParams,
+      ...(searchParams != null && { searchParams }),
+      ...(signal != null && { signal }),
       headers: { Accept: 'application/json' },
       responseType: 'json',
     })
     .json<T>()
-
-// Follow a SmugMug `NextPage` cursor (a relative `/api/v2/...` URI).
-const apiGetCursor = async <T>(client: Got, cursor: string): Promise<T> =>
+const apiGetCursor = async <T>(
+  client: Got,
+  cursor: string,
+  searchParams?: Record<string, string | number>,
+  signal?: AbortSignal,
+): Promise<T> =>
   client
     .get(`${API_HOST}${cursor}`, {
+      ...(searchParams != null && { searchParams }),
+      ...(signal != null && { signal }),
       headers: { Accept: 'application/json' },
       responseType: 'json',
     })
     .json<T>()
-
+const apiGetUri = async <T>(
+  client: Got,
+  uri: string,
+  searchParams?: Record<string, string | number>,
+  signal?: AbortSignal,
+): Promise<T> =>
+  uri.startsWith('/api/v2/')
+    ? apiGetCursor<T>(client, uri, searchParams, signal)
+    : apiGet<T>(client, uri, searchParams, signal)
 /**
  * Run `fn`, retrying on SmugMug 429 rate-limit responses with backoff. Honours a
  * `Retry-After` header (seconds or HTTP-date) when present, otherwise falls back
@@ -275,6 +401,175 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
           )
       return adaptNodeChildren(res, username, directory)
     })
+  }
+
+  async getProbeSource({
+    id,
+    companion,
+    signal,
+  }: {
+    id: string
+    companion: CompanionWithOptions
+    signal?: AbortSignal
+  }): Promise<SmugMugProbeSource> {
+    try {
+      const apiKey = getPublicProbeKey(companion)
+      const imageKey = toImageKey(id)
+      const imageResponse = await apiGet<ImageResponse>(
+        got,
+        `image/${imageKey}`,
+        { APIKey: apiKey },
+        signal,
+      )
+      const image = imageResponse.Response?.Image
+      const imageSizeDetailsUri = getUri(image?.Uris?.ImageSizeDetails)
+      if (
+        image?.Uri == null ||
+        image.ImageKey == null ||
+        !Number.isSafeInteger(image.Serial) ||
+        image.Serial < 0 ||
+        image.LastUpdated == null ||
+        imageSizeDetailsUri == null
+      ) {
+        throw new SmugMugProbeError(
+          'SmugMug image metadata is incomplete',
+          502,
+        )
+      }
+
+      const imageSizeDetails = await apiGetUri<ImageSizeDetailsResponse>(
+        got,
+        imageSizeDetailsUri,
+        { APIKey: apiKey },
+        signal,
+      )
+      const original = imageSizeDetails.Response?.ImageSizeDetails
+        ?.ImageSizeOriginal
+      const size = original?.Size ?? image.ArchivedSize
+      if (!Number.isSafeInteger(size) || size <= 0) {
+        throw new SmugMugProbeError(
+          'SmugMug original metadata is incomplete',
+          502,
+        )
+      }
+      const originalUrl = getProbeUrl(original?.Url)
+      const protectedGot = getProtectedGot({ allowLocalIPs: false })
+      const head = await protectedGot.head(originalUrl, {
+        throwHttpErrors: false,
+        followRedirect: false,
+        ...(signal != null && { signal }),
+      })
+      if (head.statusCode < 200 || head.statusCode >= 300) {
+        throw new SmugMugProbeError(
+          'SmugMug original metadata request failed',
+          502,
+        )
+      }
+      const contentLength = getHeader(head.headers, 'content-length')
+      if (
+        (original?.Size == null && contentLength == null) ||
+        (contentLength != null &&
+          (!/^\d+$/.test(contentLength) || Number(contentLength) !== size))
+      ) {
+        throw new SmugMugProbeError(
+          'SmugMug original metadata is inconsistent',
+          502,
+        )
+      }
+
+      return {
+        originalUrl,
+        metadata: {
+          canonicalUri: image.Uri,
+          imageKey: image.ImageKey,
+          serial: image.Serial,
+          archivedSize: image.ArchivedSize,
+          archivedMd5: image.ArchivedMD5,
+          lastUpdated: image.LastUpdated,
+          size,
+          mimeType: getProbeMimeType(
+            original?.MimeType ?? getHeader(head.headers, 'content-type'),
+          ),
+          etag: getHeader(head.headers, 'etag'),
+          lastModified: getHeader(head.headers, 'last-modified'),
+          acceptRanges: getHeader(head.headers, 'accept-ranges'),
+        },
+      }
+    } catch (error) {
+      if (error instanceof SmugMugProbeError) throw error
+      throw new SmugMugProbeError(
+        'SmugMug original metadata request failed',
+        502,
+      )
+    }
+  }
+
+  async openProbeRange({
+    source,
+    start,
+    end,
+    signal,
+  }: {
+    source: SmugMugProbeSource
+    start: number
+    end: number
+    signal?: AbortSignal
+  }): Promise<SmugMugProbeRange> {
+    const protectedGot = getProtectedGot({ allowLocalIPs: false })
+    const stream = protectedGot.stream.get(source.originalUrl, {
+      headers: { Range: `bytes=${start}-${end}` },
+      throwHttpErrors: false,
+      followRedirect: false,
+      ...(signal != null && { signal }),
+    })
+    try {
+      const response = await new Promise<{
+        statusCode?: number
+        headers: Record<string, string | string[] | undefined>
+      }>((resolve, reject) => {
+        const onError = (error: Error) => {
+          stream.off('response', onResponse)
+          reject(error)
+        }
+        const onResponse = (result: {
+          statusCode?: number
+          headers: Record<string, string | string[] | undefined>
+        }) => {
+          stream.off('error', onError)
+          resolve(result)
+        }
+        stream.once('error', onError)
+        stream.once('response', onResponse)
+      })
+      const expectedContentRange = `bytes ${start}-${end}/${source.metadata.size}`
+      const expectedContentLength = end - start + 1
+      const contentRange = getHeader(response.headers, 'content-range')
+      const contentLength = getHeader(response.headers, 'content-length')
+      if (
+        response.statusCode !== 206 ||
+        contentRange !== expectedContentRange ||
+        contentLength !== String(expectedContentLength)
+      ) {
+        stream.destroy()
+        throw new SmugMugProbeError(
+          'SmugMug original did not honor the requested range',
+          502,
+        )
+      }
+      return {
+        stream,
+        contentRange,
+        contentLength: expectedContentLength,
+        mimeType: getProbeMimeType(
+          getHeader(response.headers, 'content-type') ??
+          source.metadata.mimeType,
+        ),
+      }
+    } catch (error) {
+      if (!stream.destroyed) stream.destroy()
+      if (error instanceof SmugMugProbeError) throw error
+      throw new SmugMugProbeError('SmugMug range request failed', 502)
+    }
   }
 
   override async download({

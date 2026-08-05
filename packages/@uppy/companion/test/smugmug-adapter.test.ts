@@ -87,3 +87,25 @@ describe('SmugMug adapter pagination', () => {
     ).toBeNull()
   })
 })
+
+describe('SmugMug adapter source identity', () => {
+  test('uses LastUpdated rather than DateTimeUploaded for image modification', () => {
+    const { items } = adaptAlbumImages(
+      {
+        Response: {
+          AlbumImage: [
+            {
+              ImageKey: 'k1',
+              DateTimeUploaded: '2020-01-01T00:00:00Z',
+              LastUpdated: '2026-08-05T00:00:00Z',
+            },
+          ],
+        },
+      } as SmugMugAlbumImagesResponse,
+      undefined,
+      'album:abc',
+    )
+
+    expect(items[0]?.modifiedDate).toBe('2026-08-05T00:00:00Z')
+  })
+})
