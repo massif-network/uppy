@@ -11,7 +11,17 @@ import * as logger from './logger.js'
 import { isOAuthProvider } from './provider/Provider.js'
 import getS3Client from './s3-client.js'
 
-const probeResponseHeaders = ['content-range']
+const probeResponseHeaders = [
+  'content-range',
+  'content-length',
+  'accept-ranges',
+  'etag',
+  'last-modified',
+  'retry-after',
+  'x-ratelimit-remaining',
+  'x-ratelimit-reset',
+  'x-massif-source-version',
+]
 
 export const hasSessionAndProvider: RequestHandler = (req, res, next) => {
   if (!req.session) {
@@ -210,6 +220,7 @@ export const cors =
     const allowedHeaders = [
       'uppy-auth-token',
       'uppy-credentials-params',
+      'uppy-source-token',
       'authorization',
       'origin',
       'content-type',

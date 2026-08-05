@@ -3,6 +3,7 @@ import crypto from 'node:crypto'
 export type SourceTokenPayload = {
   source_id: string
   source_version: string
+  user_hash: string
   chunk_max: number
   exp: number // expiry timestamp in ms
 }
@@ -11,25 +12,38 @@ const TOKEN_TTL_MS = 15 * 60 * 1000 // 15 minutes - matches typical slice budget
 const DEFAULT_CHUNK_MAX = 64 * 1024 // 64KB default
 
 /**
+ * Non-reversible discriminator binding a token to the authenticated provider
+ * session, so one user's source token cannot be replayed with another user's
+ * auth token. Never expose or store the raw access token.
+ */
+export function deriveUserHash(accessToken: string): string {
+  return crypto.createHash('sha256').update(accessToken).digest('base64url').slice(0, 22)
+}
+
+/**
  * Mint an HMAC-signed source token for bounded byte requests.
- * The token carries source_id, source_version (from prepare), expiry, and chunk_max.
+ * The token carries source_id, source_version (from prepare), the user
+ * binding, expiry, and chunk_max.
  */
 export function mintSourceToken({
   secret,
   sourceId,
   sourceVersion,
+  userHash,
   chunkMax = DEFAULT_CHUNK_MAX,
   ttlMs = TOKEN_TTL_MS,
 }: {
   secret: string
   sourceId: string
   sourceVersion: string
+  userHash: string
   chunkMax?: number
   ttlMs?: number
 }): string {
   const payload: SourceTokenPayload = {
     source_id: sourceId,
     source_version: sourceVersion,
+    user_hash: userHash,
     chunk_max: chunkMax,
     exp: Date.now() + ttlMs,
   }

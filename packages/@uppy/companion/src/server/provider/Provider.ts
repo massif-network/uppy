@@ -8,9 +8,9 @@ import type {
 } from '../../types/express.js'
 import { MAX_AGE_24H } from '../helpers/jwt.js'
 
-// from express:
+// mirrors express 5 / qs ParsedQs so `req.query` is assignable without casts:
 export interface Query {
-  [key: string]: undefined | string | string[] | Query | Query[]
+  [key: string]: undefined | string | Query | (string | Query)[]
 }
 
 export type CompanionLike = Pick<
