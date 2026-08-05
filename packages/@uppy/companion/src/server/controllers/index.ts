@@ -14,4 +14,6 @@ export { default as thumbnail } from './thumbnail.js'
 export {
   default as smugMugRangeProbe,
   smugMugRangeProbeMetadata,
+  smugMugSourcePrepare,
+  smugMugSourceBytes,
 } from './smugmug-range-probe.js'

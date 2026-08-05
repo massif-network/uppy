@@ -93,6 +93,7 @@ export class SmugMugProbeError extends Error {
 
 type SmugMugProbeSource = {
   originalUrl: string
+  sourceVersion: string
   metadata: {
     canonicalUri: string
     imageKey: string
@@ -495,8 +496,12 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         )
       }
 
+      // Compute stable source_version from canonical identity fields
+      const sourceVersion = `${image.Uri}|${image.Serial}|${image.LastUpdated}|${size}${image.ArchivedMD5 ? `|${image.ArchivedMD5}` : ''}`
+
       return {
         originalUrl,
+        sourceVersion,
         metadata: {
           canonicalUri: image.Uri!,
           imageKey: image.ImageKey!,
