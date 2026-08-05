@@ -288,6 +288,20 @@ export function app(optionsArg: CompanionInitOptions) {
       controllers.smugMugRangeProbe,
     )
   }
+  // Phase 1: Production SmugMug source API (always enabled)
+  app.post(
+    '/smugmug/source/prepare',
+    express.json(),
+    middlewares.hasSessionAndProvider,
+    middlewares.verifyToken,
+    requireSmugMugRangeProbeProvider,
+    controllers.smugMugSourcePrepare,
+  )
+  app.get(
+    '/smugmug/source/:id/bytes',
+    requireSmugMugRangeProbeProvider,
+    controllers.smugMugSourceBytes,
+  )
   // backwards compat:
   app.get(
     '/search/:providerName/list',

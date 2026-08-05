@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream'
 import type { Request, RequestHandler, Response } from 'express'
 import { type SmugMugUserSession } from '../provider/smugmug/index.js'
+import { mintSourceToken, validateSourceToken } from '../helpers/source-token.js'
 import SmugMug, { SmugMugProbeError } from '../provider/smugmug/index.js'
 
 const DEFAULT_MAX_PROBE_BYTES = 64 * 1024
@@ -236,5 +237,227 @@ export default async function smugMugRangeProbe(
     if (!lifecycle.signal.aborted && !res.headersSent) sendError(res, error)
   } finally {
     if (!streaming) lifecycle.cleanup()
+  }
+}
+
+
+// ============================================================================
+// Phase 1: Production source API (/smugmug/source/*)
+// ============================================================================
+
+export type PrepareRequest = {
+  source_token: string // OAuth access token for the source
+  source_id: string   // Image ID (e.g., "image:ABC123")
+}
+
+export type PrepareResponse = {
+  source_version: string
+  size: number
+  etag: string | null
+  content_type: string
+  accept_ranges: boolean
+  chunk_max: number
+}
+
+const DEFAULT_CHUNK_MAX = 64 * 1024
+
+export async function smugMugSourcePrepare(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const provider = req.companion.provider
+  if (!(provider instanceof SmugMug)) {
+    res.status(400).json({ message: 'Only SmugMug is supported' })
+    return
+  }
+
+  let body: PrepareRequest
+  try {
+    body = req.body as PrepareRequest
+  } catch {
+    res.status(400).json({ message: 'Invalid JSON body' })
+    return
+  }
+
+  if (!body.source_token || !body.source_id) {
+    res.status(400).json({ message: 'source_token and source_id are required' })
+    return
+  }
+
+  const lifecycle = createProbeLifecycle(req, res, () => {})
+  try {
+    // Use the provided OAuth token for the request
+    const tokenPayload = JSON.parse(Buffer.from(body.source_token.split('.')[1] || '', 'base64').toString()) as { accessToken?: string; accessTokenSecret?: string }
+    const providerUserSession = {
+      accessToken: tokenPayload.accessToken || body.source_token,
+      accessTokenSecret: tokenPayload.accessTokenSecret,
+    }
+
+    const source = await provider.getProbeSource({
+      id: body.source_id,
+      providerUserSession: providerUserSession as any,
+      companion: req.companion,
+      signal: lifecycle.signal,
+    })
+
+    if (lifecycle.signal.aborted) return
+
+    const chunkMax = parsePositiveSafeInteger(
+      process.env['COMPANION_SMUGMUG_SOURCE_CHUNK_MAX'],
+      DEFAULT_CHUNK_MAX,
+    )
+
+    const response: PrepareResponse = {
+      source_version: source.sourceVersion,
+      size: source.metadata.size,
+      etag: source.metadata.etag ?? null,
+      content_type: source.metadata.mimeType,
+      accept_ranges: source.metadata.acceptRanges === 'bytes',
+      chunk_max: chunkMax,
+    }
+
+    res.set({
+      'Cache-Control': 'no-store',
+      'X-Massif-Source-Version': source.sourceVersion,
+    }).status(200).json(response)
+  } catch (error) {
+    if (!lifecycle.signal.aborted && !res.headersSent) {
+      if (error instanceof ProbeRequestError || error instanceof SmugMugProbeError) {
+        const statusCode = error instanceof ProbeRequestError ? error.statusCode : 502
+        res.status(statusCode).json({ message: error.message })
+        return
+      }
+      res.status(502).json({ message: 'Failed to prepare source' })
+    }
+  } finally {
+    lifecycle.cleanup()
+  }
+}
+
+export async function smugMugSourceBytes(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const provider = req.companion.provider
+  if (!(provider instanceof SmugMug)) {
+    res.status(400).json({ message: 'Only SmugMug is supported' })
+    return
+  }
+
+  const sourceId = req.params['id']
+  if (!sourceId) {
+    res.status(400).json({ message: 'source_id is required' })
+    return
+  }
+
+  const sourceToken = req.header('uppy-source-token')
+  if (!sourceToken) {
+    res.status(401).json({ message: 'uppy-source-token header is required' })
+    return
+  }
+
+  // Validate the source token
+  const secret = req.companion.options.secret
+  const tokenPayload = validateSourceToken({ secret, token: sourceToken })
+  if (!tokenPayload) {
+    res.status(401).json({ message: 'Invalid or expired source token' })
+    return
+  }
+
+  // Verify token matches the requested source
+  if (tokenPayload.source_id !== sourceId) {
+    res.status(401).json({ message: 'Source token does not match requested source' })
+    return
+  }
+
+  const lifecycle = createProbeLifecycle(req, res, () => {})
+  try {
+    // We need the OAuth token from somewhere - for now, require it as a header
+    // In production, this would come from the ephemeral grant bridge
+    const oauthToken = req.header('uppy-auth-token')
+    let providerUserSession: SmugMugUserSession | undefined
+    
+    if (oauthToken) {
+      // Decode the OAuth token from the header
+      try {
+        const tokenService = await import('../helpers/jwt.js')
+        const payload = tokenService.verifyEncryptedAuthToken(
+          oauthToken,
+          secret,
+          'smugmug',
+        ) as { smugmug?: SmugMugUserSession }
+        providerUserSession = payload.smugmug
+      } catch {
+        // Invalid OAuth token - continue without auth, may fail on private images
+      }
+    }
+
+    const source = await provider.getProbeSource({
+      id: sourceId,
+      providerUserSession: providerUserSession as any,
+      companion: req.companion,
+      signal: lifecycle.signal,
+    })
+
+    if (lifecycle.signal.aborted) return
+
+    // Verify source version hasn't changed
+    if (tokenPayload.source_version !== source.sourceVersion) {
+      res.status(409).json({ 
+        message: 'Source has been modified',
+        current_version: source.sourceVersion,
+        expected_version: tokenPayload.source_version,
+      })
+      return
+    }
+
+    const range = parseRange(req.header('Range'))
+    
+    if (range.end >= source.metadata.size) {
+      res.set('Content-Range', `bytes */${source.metadata.size}`)
+      res.status(416).json({ message: 'Range exceeds source size' })
+      return
+    }
+
+    // Enforce chunk max from token
+    if (range.end - range.start + 1 > tokenPayload.chunk_max) {
+      res.status(400).json({ 
+        message: `Range exceeds token chunk_max (${tokenPayload.chunk_max})`,
+      })
+      return
+    }
+
+    const upstream = await provider.openProbeRange({
+      companion: req.companion,
+      providerUserSession: providerUserSession as any,
+      source,
+      ...range,
+      signal: lifecycle.signal,
+    })
+
+    if (lifecycle.signal.aborted) return
+
+    res.set({
+      'Cache-Control': 'no-store',
+      'Content-Range': upstream.contentRange,
+      'Content-Length': String(upstream.contentLength),
+      'Content-Type': upstream.mimeType,
+      'ETag': source.metadata.etag || '',
+      'Last-Modified': source.metadata.lastModified || '',
+      'Accept-Ranges': source.metadata.acceptRanges || '',
+      'X-Massif-Source-Version': source.sourceVersion,
+    }).status(206)
+    upstream.stream.pipe(res)
+  } catch (error) {
+    if (!lifecycle.signal.aborted && !res.headersSent) {
+      if (error instanceof ProbeRequestError || error instanceof SmugMugProbeError) {
+        const statusCode = error instanceof ProbeRequestError ? error.statusCode : 502
+        res.status(statusCode).json({ message: error.message })
+        return
+      }
+      res.status(502).json({ message: 'Failed to fetch source bytes' })
+    }
+  } finally {
+    lifecycle.cleanup()
   }
 }
