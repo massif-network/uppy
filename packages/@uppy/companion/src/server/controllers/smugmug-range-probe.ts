@@ -1,5 +1,6 @@
 import type { Readable } from 'node:stream'
 import type { Request, RequestHandler, Response } from 'express'
+import { type SmugMugUserSession } from '../provider/smugmug/index.js'
 import SmugMug, { SmugMugProbeError } from '../provider/smugmug/index.js'
 
 const DEFAULT_MAX_PROBE_BYTES = 64 * 1024
@@ -160,7 +161,7 @@ export async function smugMugRangeProbeMetadata(
   try {
     const source = await request.provider.getProbeSource({
       id: request.id,
-      providerUserSession: req.companion.providerUserSession,
+      providerUserSession: req.companion.providerUserSession as any,
       companion: req.companion,
       signal: lifecycle.signal,
     })
@@ -187,7 +188,7 @@ export default async function smugMugRangeProbe(
     const range = parseRange(req.header('Range'))
     const source = await request.provider.getProbeSource({
       id: request.id,
-      providerUserSession: req.companion.providerUserSession,
+      providerUserSession: req.companion.providerUserSession as any,
       companion: req.companion,
       signal: lifecycle.signal,
     })
@@ -200,7 +201,7 @@ export default async function smugMugRangeProbe(
 
     const upstream = await request.provider.openProbeRange({
       companion: req.companion,
-      providerUserSession: req.companion.providerUserSession,
+      providerUserSession: req.companion.providerUserSession as any,
       source,
       ...range,
       signal: lifecycle.signal,
