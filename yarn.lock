@@ -4885,6 +4885,7 @@ __metadata:
     "@uppy/utils": "workspace:^"
     preact: "npm:^10.29.2"
     typescript: "npm:^5.8.3"
+    vitest: "npm:4.1.6"
   peerDependencies:
     "@uppy/core": "workspace:^"
   languageName: unknown

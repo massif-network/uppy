@@ -2,7 +2,6 @@ import {
   type CompanionPluginOptions,
   getAllowedHosts,
   Provider,
-  tokenStorage,
 } from '@uppy/companion-client'
 import type {
   AsyncStore,
@@ -20,10 +19,25 @@ import type { LocaleStrings } from '@uppy/utils'
 import { type ComponentChild, h } from 'preact'
 import packageJson from '../package.json' with { type: 'json' }
 import locale from './locale.js'
+import { createMemoryStore } from './memory-store.js'
+import { buildSourceRootFromPartialTree, type SmugMugSourceRoot } from './root-descriptor.js'
+import { buildServiceWorkerGrant, type ServiceWorkerGrant } from './service-worker-grant.js'
 
 export type SmugMugOptions = CompanionPluginOptions & {
   locale?: LocaleStrings<typeof locale>
+  /**
+   * When true, browsing does not eagerly expand every page of every folder
+   * (`loadAllFiles: false`) and the plugin exposes `selectCurrentFolderAsRoot`
+   * / `getServiceWorkerGrant` for the upload-Service-Worker import path.
+   * Callers on this path must never invoke `donePicking()`.
+   */
+  rootDescriptorMode?: boolean
+  /** Fired when `selectCurrentFolderAsRoot()` resolves a valid root. */
+  onSourceRootSelected?: (root: SmugMugSourceRoot) => void
 }
+
+export type { SmugMugSourceRoot } from './root-descriptor.js'
+export type { ServiceWorkerGrant } from './service-worker-grant.js'
 
 export default class SmugMug<M extends Meta, B extends Body>
   extends UIPlugin<SmugMugOptions, M, B, UnknownProviderPluginState>
@@ -47,7 +61,10 @@ export default class SmugMug<M extends Meta, B extends Body>
     super(uppy, opts)
     this.id = this.opts.id || 'SmugMug'
     this.type = 'acquirer'
-    this.storage = this.opts.storage || tokenStorage
+    // Default to an in-memory store rather than `tokenStorage` (localStorage):
+    // the upload Service Worker path re-supplies an ephemeral grant per
+    // slice instead of persisting the Companion token across reloads.
+    this.storage = this.opts.storage || createMemoryStore()
     this.files = []
     this.icon = () => (
       <svg
@@ -106,7 +123,11 @@ export default class SmugMug<M extends Meta, B extends Body>
   install(): void {
     this.view = new ProviderViews(this, {
       provider: this.provider,
-      loadAllFiles: true,
+      // `loadAllFiles: true` eagerly drains every page of every opened
+      // folder — the exact recursive-materialization defect the SW import
+      // path exists to avoid. In that mode, browsing stays paginated; the
+      // SW's own bounded enumerator (not this view) walks the selected root.
+      loadAllFiles: !this.opts.rootDescriptorMode,
       virtualList: true,
     })
 
@@ -123,6 +144,38 @@ export default class SmugMug<M extends Meta, B extends Body>
 
   render(state: unknown): ComponentChild {
     return this.view.render(state)
+  }
+
+  /**
+   * Resolve the currently-open folder/album as an import root, WITHOUT
+   * calling `ProviderViews.donePicking()` — that path recursively drains
+   * every checked folder (`afterFill`) and materializes every descendant
+   * file into Uppy, which is exactly what root-descriptor mode exists to
+   * avoid at 10,000+ image scale. Returns `null` at the account root (too
+   * broad a target) or before any folder has been opened.
+   */
+  selectCurrentFolderAsRoot(): SmugMugSourceRoot | null {
+    const { currentFolderId, partialTree } = this.getPluginState()
+    const root = buildSourceRootFromPartialTree(currentFolderId, partialTree)
+    if (root != null) {
+      this.opts.onSourceRootSelected?.(root)
+    }
+    return root
+  }
+
+  /**
+   * Mint an ephemeral grant for the page to post to the upload Service
+   * Worker immediately before a slice. Only the allowlisted Companion
+   * headers are included; the underlying token/secret never leave this
+   * plugin's in-memory store.
+   */
+  async getServiceWorkerGrant(): Promise<ServiceWorkerGrant> {
+    const headers = await this.provider.headers()
+    const companionUrl = this.opts.companionUrl
+    if (companionUrl == null) {
+      throw new Error('SmugMug: companionUrl is required to mint a Service Worker grant')
+    }
+    return buildServiceWorkerGrant(companionUrl, headers, Date.now())
   }
 }
 

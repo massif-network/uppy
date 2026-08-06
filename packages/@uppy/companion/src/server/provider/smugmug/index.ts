@@ -365,7 +365,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
           : await apiGet<SmugMugAlbumImagesResponse>(
               client,
               `album/${albumKey}!images`,
-              { _count: PAGE_SIZE },
+              { count: PAGE_SIZE },
             )
         return adaptAlbumImages(res, undefined, directory)
       }
@@ -378,7 +378,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
           : await apiGet<SmugMugNodeChildrenResponse>(
               client,
               `node/${nodeId}!children`,
-              { _count: PAGE_SIZE },
+              { count: PAGE_SIZE },
             )
         return adaptNodeChildren(res, undefined, directory)
       }
@@ -398,7 +398,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         : await apiGet<SmugMugNodeChildrenResponse>(
             client,
             `node/${rootNodeId}!children`,
-            { _count: PAGE_SIZE },
+            { count: PAGE_SIZE },
           )
       return adaptNodeChildren(res, username, directory)
     })
