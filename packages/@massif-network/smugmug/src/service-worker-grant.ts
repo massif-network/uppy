@@ -19,20 +19,40 @@ const FORWARDABLE_HEADERS = ['uppy-auth-token', 'uppy-credentials-params']
 /** Grant lifetime: long enough for one slice's network calls, no longer. */
 const GRANT_TTL_MS = 5 * 60 * 1000
 
+/** No CR/LF: a raw header-injection guard, not just an emptiness check. */
+const VALID_HEADER_VALUE = /^[^\r\n]+$/
+
 export function buildServiceWorkerGrant(
   companionUrl: string,
   headers: Record<string, string>,
   now: number,
 ): ServiceWorkerGrant {
+  const url = new URL(companionUrl)
+  if (url.protocol !== 'https:') {
+    throw new Error(
+      `SmugMug: companion origin must be https, got "${url.protocol}"`,
+    )
+  }
+
   const forwarded: Record<string, string> = {}
   for (const name of FORWARDABLE_HEADERS) {
     const value = headers[name]
-    if (value != null) forwarded[name] = value
+    if (value == null) continue
+    if (!VALID_HEADER_VALUE.test(value)) {
+      throw new Error(`SmugMug: malformed value for forwarded header "${name}"`)
+    }
+    forwarded[name] = value
   }
+  if (Object.keys(forwarded).length === 0) {
+    throw new Error(
+      'SmugMug: grant must forward at least one allowlisted header',
+    )
+  }
+
   return {
     grantId: `smugmug-${now}-${Math.random().toString(36).slice(2, 10)}`,
     provider: 'smugmug',
-    companionOrigin: new URL(companionUrl).origin,
+    companionOrigin: url.origin,
     headers: forwarded,
     issuedAt: now,
     expiresAt: now + GRANT_TTL_MS,

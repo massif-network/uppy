@@ -20,8 +20,48 @@ import { type ComponentChild, h } from 'preact'
 import packageJson from '../package.json' with { type: 'json' }
 import locale from './locale.js'
 import { createMemoryStore } from './memory-store.js'
-import { buildSourceRootFromPartialTree, type SmugMugSourceRoot } from './root-descriptor.js'
-import { buildServiceWorkerGrant, type ServiceWorkerGrant } from './service-worker-grant.js'
+import {
+  buildSourceRootFromPartialTree,
+  type SmugMugSourceRoot,
+} from './root-descriptor.js'
+import {
+  buildServiceWorkerGrant,
+  type ServiceWorkerGrant,
+} from './service-worker-grant.js'
+
+export type DescriptorModeFooterOptions = {
+  canImport: boolean
+  onSelect: () => void
+  onCancel: () => void
+}
+
+export function renderDescriptorModeFooter({
+  canImport,
+  onSelect,
+  onCancel,
+}: DescriptorModeFooterOptions): h.JSX.Element {
+  return (
+    <div className="uppy-ProviderBrowser-footer uppy-SmugMug-descriptor-footer">
+      <div className="uppy-ProviderBrowser-footer-buttons">
+        <button
+          className="uppy-u-reset uppy-c-btn uppy-c-btn-primary"
+          disabled={!canImport}
+          onClick={onSelect}
+          type="button"
+        >
+          Import this album/folder
+        </button>
+        <button
+          className="uppy-u-reset uppy-c-btn uppy-c-btn-link"
+          onClick={onCancel}
+          type="button"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export type SmugMugOptions = CompanionPluginOptions & {
   locale?: LocaleStrings<typeof locale>
@@ -129,6 +169,24 @@ export default class SmugMug<M extends Meta, B extends Body>
       // SW's own bounded enumerator (not this view) walks the selected root.
       loadAllFiles: !this.opts.rootDescriptorMode,
       virtualList: true,
+      ...(this.opts.rootDescriptorMode
+        ? {
+            renderFooter: ({ cancelSelection }) => {
+              const { currentFolderId, partialTree } = this.getPluginState()
+              const root = buildSourceRootFromPartialTree(
+                currentFolderId,
+                partialTree,
+              )
+              return renderDescriptorModeFooter({
+                canImport: root != null,
+                onSelect: () => {
+                  this.selectCurrentFolderAsRoot()
+                },
+                onCancel: cancelSelection,
+              })
+            },
+          }
+        : {}),
     })
 
     const { target } = this.opts
@@ -173,12 +231,13 @@ export default class SmugMug<M extends Meta, B extends Body>
     const headers = await this.provider.headers()
     const companionUrl = this.opts.companionUrl
     if (companionUrl == null) {
-      throw new Error('SmugMug: companionUrl is required to mint a Service Worker grant')
+      throw new Error(
+        'SmugMug: companionUrl is required to mint a Service Worker grant',
+      )
     }
     return buildServiceWorkerGrant(companionUrl, headers, Date.now())
   }
 }
-
 declare module '@uppy/core' {
   export interface PluginTypeRegistry<M extends Meta, B extends Body> {
     SmugMug: SmugMug<M, B>

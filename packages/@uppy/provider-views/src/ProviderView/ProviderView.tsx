@@ -73,6 +73,11 @@ export interface Opts<M extends Meta, B extends Body> {
   showFilter: boolean
   showBreadcrumbs: boolean
   loadAllFiles: boolean
+  renderFooter?: (args: {
+    partialTree: PartialTree
+    i18n: I18n
+    cancelSelection: () => void
+  }) => h.JSX.Element
   renderAuthForm?: (args: {
     pluginName: string
     i18n: I18n
@@ -660,6 +665,20 @@ export default class ProviderView<M extends Meta, B extends Body> {
       this.plugin.getPluginState()
     const breadcrumbs = this.getBreadcrumbs()
 
+    const footer = opts.renderFooter?.({
+      partialTree,
+      i18n,
+      cancelSelection: this.cancelSelection,
+    }) ?? (
+      <FooterActions
+        partialTree={partialTree}
+        donePicking={this.donePicking}
+        cancelSelection={this.cancelSelection}
+        i18n={i18n}
+        validateAggregateRestrictions={this.validateAggregateRestrictions}
+      />
+    )
+
     return (
       <div
         className={classNames(
@@ -705,13 +724,7 @@ export default class ProviderView<M extends Meta, B extends Body> {
           />
         )}
 
-        <FooterActions
-          partialTree={partialTree}
-          donePicking={this.donePicking}
-          cancelSelection={this.cancelSelection}
-          i18n={i18n}
-          validateAggregateRestrictions={this.validateAggregateRestrictions}
-        />
+        {footer}
       </div>
     )
   }

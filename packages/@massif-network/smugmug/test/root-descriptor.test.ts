@@ -1,5 +1,8 @@
-import { describe, expect, test } from 'vitest'
+/* @vitest-environment jsdom */
+import { describe, expect, test, vi } from 'vitest'
+import { render } from 'preact'
 import type { PartialTree, PartialTreeFile } from '@uppy/core'
+import { renderDescriptorModeFooter } from '../src/SmugMug.js'
 import { buildSourceRootFromPartialTree } from '../src/root-descriptor.js'
 
 const tree: PartialTree = [
@@ -64,6 +67,46 @@ describe('buildSourceRootFromPartialTree', () => {
       parentId: 'album:X',
       data: { name: 'a.jpg', isFolder: false },
     } as unknown as PartialTreeFile
-    expect(buildSourceRootFromPartialTree('image:AAA', [...tree, fileNode])).toBeNull()
+    expect(
+      buildSourceRootFromPartialTree('image:AAA', [...tree, fileNode]),
+    ).toBeNull()
+  })
+})
+
+describe('descriptor-mode footer', () => {
+  test('renders an import action that invokes the supplied root callback', () => {
+    const onSelect = vi.fn()
+    const onCancel = vi.fn()
+    const container = document.createElement('div')
+    render(
+      renderDescriptorModeFooter({
+        canImport: true,
+        onSelect,
+        onCancel,
+      }),
+      container,
+    )
+    const importButton = container.querySelector('button')
+
+    expect(container.textContent).toContain('Import this album/folder')
+    expect(importButton).not.toBeNull()
+    importButton?.click()
+    expect(onSelect).toHaveBeenCalledOnce()
+  })
+
+  test('disables the action when no folder root is selected', () => {
+    const container = document.createElement('div')
+    render(
+      renderDescriptorModeFooter({
+        canImport: false,
+        onSelect: vi.fn(),
+        onCancel: vi.fn(),
+      }),
+      container,
+    )
+    const importButton = container.querySelector('button')
+
+    expect(importButton).not.toBeNull()
+    expect(importButton?.disabled).toBe(true)
   })
 })
