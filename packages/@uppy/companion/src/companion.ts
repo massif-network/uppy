@@ -128,7 +128,7 @@ export function app(optionsArg: CompanionInitOptions) {
   const redisClient = redis.client(options)
   const emitter = createEmitter(redisClient, options.redisPubSubScope)
 
-  const app = express()
+  const app: express.Express = express()
 
   // Needed for e.g. s3 `/params` endpoint metadata, like `metadata[key]=value` to be parsed into a metadata object
   app.set('query parser', 'extended')

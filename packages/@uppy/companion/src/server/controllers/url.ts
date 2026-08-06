@@ -59,7 +59,7 @@ const get = async (req: Request, res: Response): Promise<void> => {
   }
 }
 
-export default () =>
+export default (): express.Router =>
   express
     .Router()
     .post('/meta', express.json(), meta)

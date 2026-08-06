@@ -66,4 +66,4 @@ const get = async (req: Request, res: Response): Promise<void> => {
   }
 }
 
-export default () => express.Router().post('/get', express.json(), get)
+export default (): express.Router => express.Router().post('/get', express.json(), get)

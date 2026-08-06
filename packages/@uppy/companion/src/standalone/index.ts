@@ -29,9 +29,9 @@ export default function server(inputCompanionOptions?: CompanionInitOptions) {
   if (!companionOptions.preAuthSecret)
     companionOptions.preAuthSecret = generateSecret('preAuthSecret')
 
-  const app = express()
+  const app: express.Express = express()
 
-  const router = express.Router()
+  const router: express.Router = express.Router()
 
   const serverPath = companionOptions.server.path
   if (serverPath != null) {
