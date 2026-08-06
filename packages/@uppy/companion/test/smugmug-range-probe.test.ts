@@ -14,7 +14,9 @@ vi.mock('express-prom-bundle')
 vi.mock('../src/server/helpers/upload.js', () => upload)
 
 import { isSmugMugRangeProbeEnabled } from '../src/server/controllers/smugmug-range-probe.js'
+import SmugMug from '../src/server/provider/smugmug/index.js'
 import { getServer, setDefaultEnv } from './mockserver.js'
+
 const API_HOST = 'https://api.smugmug.com'
 const ORIGINAL_HOST = 'https://photos.smugmug.com'
 const UNTRUSTED_HOST = 'https://untrusted.example.test'
@@ -22,12 +24,17 @@ const imageId = 'image:probe-image-7'
 const imagePath = '/api/v2/image/probe-image-7'
 const detailsPath = '/api/v2/image/probe-image-7!sizedetails'
 
-function mockImageMetadata(
-  { size = 10, originalHost = ORIGINAL_HOST }: {
-    size?: number
-    originalHost?: string
-  } = {},
-): void {
+function mockImageMetadata({
+  size = 10,
+  archivedSize = size,
+  originalSize = size,
+  originalHost = ORIGINAL_HOST,
+}: {
+  size?: number
+  archivedSize?: number
+  originalSize?: number
+  originalHost?: string
+} = {}): void {
   nock(API_HOST)
     .get(imagePath)
     .query((query) => typeof query['APIKey'] === 'string')
@@ -37,7 +44,7 @@ function mockImageMetadata(
           Uri: imagePath,
           ImageKey: 'probe-image',
           Serial: 7,
-          ArchivedSize: size,
+          ArchivedSize: archivedSize,
           ArchivedMD5: 'probe-md5',
           LastUpdated: '2026-08-05T00:00:00Z',
           Uris: { ImageSizeDetails: { Uri: detailsPath } },
@@ -51,7 +58,7 @@ function mockImageMetadata(
         ImageSizeDetails: {
           ImageSizeOriginal: {
             Url: `${originalHost}/original`,
-            Size: size,
+            Size: originalSize,
             MimeType: 'image/jpeg',
           },
         },
@@ -60,10 +67,12 @@ function mockImageMetadata(
 }
 
 function mockOriginalHead(size = 10): void {
-  nock(ORIGINAL_HOST).head('/original').reply(200, '', {
-    'content-length': String(size),
-    'content-type': 'image/jpeg',
-  })
+  nock(ORIGINAL_HOST)
+    .head('/original')
+    .reply(200, '', {
+      'content-length': String(size),
+      'content-type': 'image/jpeg',
+    })
 }
 
 function getProbeServer(extraEnv: Record<string, string | undefined> = {}) {
@@ -123,15 +132,13 @@ describe('temporary public SmugMug range probe', () => {
 
   test('returns normalized public-original metadata without returning its URL', async () => {
     mockImageMetadata()
-    nock(ORIGINAL_HOST)
-      .head('/original')
-      .reply(200, '', {
-        'content-length': '10',
-        'content-type': 'image/jpeg',
-        etag: 'probe-etag',
-        'last-modified': 'Tue, 05 Aug 2026 00:00:00 GMT',
-        'accept-ranges': 'bytes',
-      })
+    nock(ORIGINAL_HOST).head('/original').reply(200, '', {
+      'content-length': '10',
+      'content-type': 'image/jpeg',
+      etag: 'probe-etag',
+      'last-modified': 'Tue, 05 Aug 2026 00:00:00 GMT',
+      'accept-ranges': 'bytes',
+    })
 
     const server = await getProbeServer()
     const response = await request(server)
@@ -152,6 +159,64 @@ describe('temporary public SmugMug range probe', () => {
       acceptRanges: 'bytes',
     })
     expect(response.text).not.toContain(ORIGINAL_HOST)
+  })
+
+  test('rejects inconsistent ArchivedSize and verified original Size', async () => {
+    mockImageMetadata({ archivedSize: 11, originalSize: 10 })
+    mockOriginalHead(10)
+
+    const server = await getProbeServer()
+    await request(server)
+      .get(`/smugmug/_range-probe/${imageId}/metadata`)
+      .expect(502)
+
+    expect(nock.pendingMocks()).toHaveLength(1)
+  })
+
+  test('revalidates the original URL host before opening a range', async () => {
+    nock(UNTRUSTED_HOST)
+      .get('/original')
+      .matchHeader('range', 'bytes=0-1')
+      .reply(206, '01', {
+        'content-range': 'bytes 0-1/2',
+        'content-length': '2',
+      })
+
+    const provider = new SmugMug({ allowLocalUrls: false })
+    await expect(
+      provider.openProbeRange({
+        companion: {
+          options: {
+            providerOptions: { smugmug: { key: 'key', secret: 'secret' } },
+          },
+        },
+        providerUserSession: {
+          accessToken: 'access-token',
+          accessTokenSecret: 'access-secret',
+        },
+        source: {
+          originalUrl: `${UNTRUSTED_HOST}/original`,
+          sourceVersion: 'source-version',
+          metadata: {
+            canonicalUri: imagePath,
+            imageKey: 'probe-image',
+            serial: 7,
+            archivedSize: 2,
+            archivedMd5: 'probe-md5',
+            lastUpdated: '2026-08-05T00:00:00Z',
+            size: 2,
+            mimeType: 'image/jpeg',
+            etag: undefined,
+            lastModified: undefined,
+            acceptRanges: 'bytes',
+          },
+        },
+        start: 0,
+        end: 1,
+      }),
+    ).rejects.toMatchObject({ statusCode: 502 })
+
+    expect(nock.pendingMocks()).toHaveLength(1)
   })
 
   test('streams one exact public range without invoking destination upload code', async () => {
@@ -236,9 +301,11 @@ describe('temporary public SmugMug range probe', () => {
 
   test('rejects a HEAD redirect without following its target', async () => {
     mockImageMetadata()
-    nock(ORIGINAL_HOST).head('/original').reply(302, '', {
-      location: `${UNTRUSTED_HOST}/redirect-head`,
-    })
+    nock(ORIGINAL_HOST)
+      .head('/original')
+      .reply(302, '', {
+        location: `${UNTRUSTED_HOST}/redirect-head`,
+      })
     nock(UNTRUSTED_HOST).head('/redirect-head').reply(200, '', {
       'content-length': '10',
       'content-type': 'image/jpeg',
@@ -279,9 +346,11 @@ describe('temporary public SmugMug range probe', () => {
     const { default: SmugMug } = await import(
       '../src/server/provider/smugmug/index.js'
     )
-    const provider = Object.create(SmugMug.prototype) as InstanceType<typeof SmugMug>
+    const provider = Object.create(SmugMug.prototype) as InstanceType<
+      typeof SmugMug
+    >
     vi.spyOn(SmugMug.prototype, 'getProbeSource').mockImplementation(
-      () => new Promise<never>(() => { }),
+      () => new Promise<never>(() => {}),
     )
     const app = express()
     app.get('/:providerName/_range-probe/:id', (req, res, next) => {
@@ -302,7 +371,9 @@ describe('temporary public SmugMug range probe', () => {
     const { default: SmugMug } = await import(
       '../src/server/provider/smugmug/index.js'
     )
-    const provider = Object.create(SmugMug.prototype) as InstanceType<typeof SmugMug>
+    const provider = Object.create(SmugMug.prototype) as InstanceType<
+      typeof SmugMug
+    >
     let setupSignal: AbortSignal | undefined
     let started!: () => void
     const setupStarted = new Promise<void>((resolve) => {
@@ -312,7 +383,7 @@ describe('temporary public SmugMug range probe', () => {
       ({ signal }: { signal?: AbortSignal }) => {
         setupSignal = signal
         started()
-        return new Promise<never>(() => { })
+        return new Promise<never>(() => {})
       },
     )
     const app = express()
@@ -334,7 +405,7 @@ describe('temporary public SmugMug range probe', () => {
         path: `/smugmug/_range-probe/${imageId}`,
         headers: { Range: 'bytes=0-1' },
       })
-      client.once('error', () => { })
+      client.once('error', () => {})
       client.end()
       await setupStarted
       client.destroy()
@@ -358,7 +429,9 @@ describe('temporary public SmugMug range probe', () => {
     )
     const source = new PassThrough()
     const destroy = vi.spyOn(source, 'destroy')
-    const provider = Object.create(SmugMug.prototype) as InstanceType<typeof SmugMug>
+    const provider = Object.create(SmugMug.prototype) as InstanceType<
+      typeof SmugMug
+    >
     vi.spyOn(SmugMug.prototype, 'getProbeSource').mockResolvedValue({
       metadata: { size: 10 },
     } as never)
@@ -421,7 +494,9 @@ describe('temporary public SmugMug range probe', () => {
     )
     const source = new PassThrough()
     const destroy = vi.spyOn(source, 'destroy')
-    const provider = Object.create(SmugMug.prototype) as InstanceType<typeof SmugMug>
+    const provider = Object.create(SmugMug.prototype) as InstanceType<
+      typeof SmugMug
+    >
     vi.spyOn(SmugMug.prototype, 'getProbeSource').mockResolvedValue({
       metadata: { size: 10 },
     } as never)
@@ -457,7 +532,7 @@ describe('temporary public SmugMug range probe', () => {
             resolve()
           })
         })
-        client.once('error', () => { })
+        client.once('error', () => {})
         client.end()
         source.write('01')
       })

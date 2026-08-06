@@ -28,6 +28,13 @@ export interface ProviderListItem {
   mimeType?: string | null | undefined
   size?: number | null | undefined
   thumbnail?: string | null | undefined
+  imageKey?: string | undefined
+  serial?: number | undefined
+  canonicalUri?: string | undefined
+  archivedSize?: number | null | undefined
+  archivedMd5?: string | null | undefined
+  lastUpdated?: string | undefined
+  sourceVersion?: string | undefined
 }
 
 // todo use these types in the Uppy client

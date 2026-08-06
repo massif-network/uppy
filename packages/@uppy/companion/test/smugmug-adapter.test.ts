@@ -6,6 +6,7 @@ import {
   type SmugMugAlbumImagesResponse,
   type SmugMugNodeChildrenResponse,
 } from '../src/server/provider/smugmug/adapter.js'
+import { getCanonicalSourceVersion } from '../src/server/provider/smugmug/source-version.js'
 
 // Regression coverage for album/folder pagination: the client pages by feeding
 // `nextPagePath` straight back in as the next `directory`, so the directory MUST
@@ -107,5 +108,53 @@ describe('SmugMug adapter source identity', () => {
     )
 
     expect(items[0]?.modifiedDate).toBe('2026-08-05T00:00:00Z')
+  })
+})
+
+describe('SmugMug adapter canonical list metadata', () => {
+  test('carries an internally consistent source identity tuple', () => {
+    const { items } = adaptAlbumImages(
+      {
+        Response: {
+          AlbumImage: [
+            {
+              Uri: '/api/v2/image/k1',
+              ImageKey: 'k1',
+              Serial: 7,
+              ArchivedSize: 1234,
+              ArchivedMD5: 'md5-k1',
+              LastUpdated: '2026-08-05T00:00:00Z',
+              FileName: 'a.jpg',
+            },
+          ],
+        },
+      },
+      undefined,
+      'album:abc',
+    )
+
+    expect(items[0]).toMatchObject({
+      imageKey: 'k1',
+      serial: 7,
+      canonicalUri: '/api/v2/image/k1',
+      archivedSize: 1234,
+      archivedMd5: 'md5-k1',
+      lastUpdated: '2026-08-05T00:00:00Z',
+      sourceVersion: '/api/v2/image/k1|7|2026-08-05T00:00:00Z|1234|md5-k1',
+    })
+  })
+})
+
+describe('SmugMug canonical source-version helper', () => {
+  test('matches the list identity tuple used by source preparation', () => {
+    expect(
+      getCanonicalSourceVersion({
+        canonicalUri: '/api/v2/image/k1',
+        serial: 7,
+        lastUpdated: '2026-08-05T00:00:00Z',
+        size: 1234,
+        archivedMd5: 'md5-k1',
+      }),
+    ).toBe('/api/v2/image/k1|7|2026-08-05T00:00:00Z|1234|md5-k1')
   })
 })

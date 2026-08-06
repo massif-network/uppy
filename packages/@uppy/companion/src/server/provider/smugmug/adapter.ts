@@ -1,6 +1,7 @@
 import querystring from 'node:querystring'
 import mime from 'mime-types'
-import type { ProviderListResponse } from '../Provider.js'
+import type { ProviderListItem, ProviderListResponse } from '../Provider.js'
+import { getCanonicalSourceVersion } from './source-version.js'
 
 // SmugMug API v2 response shapes (only the fields we consume).
 // Docs: https://api.smugmug.com/api/v2/doc/index.html
@@ -27,10 +28,12 @@ export type SmugMugNodeChildrenResponse = {
 }
 
 export type SmugMugAlbumImage = {
+  Uri?: string
   Title?: string
   Caption?: string
   FileName?: string
   ImageKey?: string
+  Serial?: number
   ArchivedSize?: number
   ArchivedMD5?: string
   IsVideo?: boolean
@@ -131,9 +134,52 @@ export function adaptAlbumImages(
   const items = images
     .filter((image) => !image.IsVideo && image.ImageKey != null)
     .map((image) => {
-      const name = image.FileName || image.Title || image.ImageKey || ''
+      const imageKey = image.ImageKey!
+      const name = image.FileName || image.Title || imageKey || ''
       const mimeType = mime.lookup(name)
-      const requestPath = `image:${image.ImageKey}`
+      const requestPath = `image:${imageKey}`
+      let canonicalMetadata: Pick<
+        ProviderListItem,
+        | 'imageKey'
+        | 'serial'
+        | 'canonicalUri'
+        | 'archivedSize'
+        | 'archivedMd5'
+        | 'lastUpdated'
+        | 'sourceVersion'
+      > = {}
+
+      const serial = image.Serial
+      const archivedSize = image.ArchivedSize
+      const canonicalUri = image.Uri
+      const lastUpdated = image.LastUpdated
+      if (
+        canonicalUri != null &&
+        typeof serial === 'number' &&
+        Number.isSafeInteger(serial) &&
+        serial >= 0 &&
+        typeof archivedSize === 'number' &&
+        Number.isSafeInteger(archivedSize) &&
+        archivedSize > 0 &&
+        lastUpdated != null &&
+        lastUpdated.length > 0
+      ) {
+        canonicalMetadata = {
+          imageKey,
+          serial,
+          canonicalUri,
+          archivedSize,
+          archivedMd5: image.ArchivedMD5 ?? null,
+          lastUpdated,
+          sourceVersion: getCanonicalSourceVersion({
+            canonicalUri,
+            serial,
+            lastUpdated,
+            size: archivedSize,
+            archivedMd5: image.ArchivedMD5,
+          }),
+        }
+      }
 
       return {
         isFolder: false,
@@ -147,6 +193,7 @@ export function adaptAlbumImages(
         // Approach A: hand the SmugMug CDN thumbnail straight to the client.
         thumbnail: image.ThumbnailUrl,
         size: image.ArchivedSize ?? null,
+        ...canonicalMetadata,
       }
     })
 

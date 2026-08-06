@@ -2,6 +2,7 @@ import {
   type CompanionPluginOptions,
   getAllowedHosts,
   Provider,
+  tokenStorage,
 } from '@uppy/companion-client'
 import type {
   AsyncStore,
@@ -20,11 +21,55 @@ import { type ComponentChild, h } from 'preact'
 import packageJson from '../package.json' with { type: 'json' }
 import locale from './locale.js'
 import { createMemoryStore } from './memory-store.js'
-import { buildSourceRootFromPartialTree, type SmugMugSourceRoot } from './root-descriptor.js'
-import { buildServiceWorkerGrant, type ServiceWorkerGrant } from './service-worker-grant.js'
+import {
+  buildSourceRootFromPartialTree,
+  type SmugMugSourceRoot,
+} from './root-descriptor.js'
+import {
+  buildServiceWorkerGrant,
+  type ServiceWorkerGrant,
+} from './service-worker-grant.js'
 
-export type SmugMugOptions = CompanionPluginOptions & {
+export type DescriptorModeFooterOptions = {
+  canImport: boolean
+  onSelect: () => void
+  onCancel: () => void
+}
+
+export function renderDescriptorModeFooter({
+  canImport,
+  onSelect,
+  onCancel,
+}: DescriptorModeFooterOptions): h.JSX.Element {
+  return (
+    <div className="uppy-ProviderBrowser-footer uppy-SmugMug-descriptor-footer">
+      <div className="uppy-ProviderBrowser-footer-buttons">
+        <button
+          className="uppy-u-reset uppy-c-btn uppy-c-btn-primary"
+          disabled={!canImport}
+          onClick={onSelect}
+          type="button"
+        >
+          Import this album/folder
+        </button>
+        <button
+          className="uppy-u-reset uppy-c-btn uppy-c-btn-link"
+          onClick={onCancel}
+          type="button"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export type SmugMugOptions = Omit<
+  CompanionPluginOptions,
+  'companionCookiesRule'
+> & {
   locale?: LocaleStrings<typeof locale>
+  companionCookiesRule?: 'same-origin' | 'include' | 'omit'
   /**
    * When true, browsing does not eagerly expand every page of every folder
    * (`loadAllFiles: false`) and the plugin exposes `selectCurrentFolderAsRoot`
@@ -61,10 +106,9 @@ export default class SmugMug<M extends Meta, B extends Body>
     super(uppy, opts)
     this.id = this.opts.id || 'SmugMug'
     this.type = 'acquirer'
-    // Default to an in-memory store rather than `tokenStorage` (localStorage):
-    // the upload Service Worker path re-supplies an ephemeral grant per
-    // slice instead of persisting the Companion token across reloads.
-    this.storage = this.opts.storage || createMemoryStore()
+    this.storage = this.opts.rootDescriptorMode
+      ? createMemoryStore()
+      : (this.opts.storage ?? tokenStorage)
     this.files = []
     this.icon = () => (
       <svg
@@ -105,7 +149,10 @@ export default class SmugMug<M extends Meta, B extends Body>
       companionUrl: this.opts.companionUrl,
       companionHeaders: this.opts.companionHeaders,
       companionKeysParams: this.opts.companionKeysParams,
-      companionCookiesRule: this.opts.companionCookiesRule,
+      companionCookiesRule: (this.opts.rootDescriptorMode
+        ? 'omit'
+        : this.opts
+            .companionCookiesRule) as CompanionPluginOptions['companionCookiesRule'],
       provider: 'smugmug',
       pluginId: this.id,
       // SmugMug is OAuth 1.0a: tokens don't expire and there is no refresh token.
@@ -129,6 +176,24 @@ export default class SmugMug<M extends Meta, B extends Body>
       // SW's own bounded enumerator (not this view) walks the selected root.
       loadAllFiles: !this.opts.rootDescriptorMode,
       virtualList: true,
+      ...(this.opts.rootDescriptorMode
+        ? {
+            renderFooter: ({ partialTree, cancelSelection }) => {
+              const { currentFolderId } = this.getPluginState()
+              const root = buildSourceRootFromPartialTree(
+                currentFolderId,
+                partialTree,
+              )
+              return renderDescriptorModeFooter({
+                canImport: root != null,
+                onSelect: () => {
+                  this.selectCurrentFolderAsRoot()
+                },
+                onCancel: cancelSelection,
+              })
+            },
+          }
+        : {}),
     })
 
     const { target } = this.opts
@@ -171,14 +236,15 @@ export default class SmugMug<M extends Meta, B extends Body>
    */
   async getServiceWorkerGrant(): Promise<ServiceWorkerGrant> {
     const headers = await this.provider.headers()
-    const companionUrl = this.opts.companionUrl
+    const companionUrl = this.provider.hostname
     if (companionUrl == null) {
-      throw new Error('SmugMug: companionUrl is required to mint a Service Worker grant')
+      throw new Error(
+        'SmugMug: companionUrl is required to mint a Service Worker grant',
+      )
     }
     return buildServiceWorkerGrant(companionUrl, headers, Date.now())
   }
 }
-
 declare module '@uppy/core' {
   export interface PluginTypeRegistry<M extends Meta, B extends Body> {
     SmugMug: SmugMug<M, B>

@@ -8,6 +8,7 @@ import { getProtectedGot } from '../../helpers/request.js'
 import { isRecord } from '../../helpers/type-guards.js'
 import { prepareStream } from '../../helpers/utils.js'
 import logger from '../../logger.js'
+import { ProviderUserError } from '../error.js'
 import Provider, {
   type CompanionLike,
   type ProviderListResponse,
@@ -22,10 +23,77 @@ import {
   type SmugMugNodeChildrenResponse,
   type SmugMugRef,
 } from './adapter.js'
+import { getCanonicalSourceVersion } from './source-version.js'
 
 const API_HOST = 'https://api.smugmug.com'
 const API_BASE = `${API_HOST}/api/v2`
 const PAGE_SIZE = 100
+
+const SAFE_DIRECTORY_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/
+
+type DirectoryTarget = {
+  kind: 'album' | 'node'
+  id: string
+  expectedPath: string
+}
+
+const getDirectoryTarget = (
+  directory: string | undefined,
+): DirectoryTarget | undefined => {
+  if (directory == null || directory === '') return undefined
+
+  const separator = directory.indexOf(':')
+  const kind = separator === -1 ? undefined : directory.slice(0, separator)
+  const id = separator === -1 ? undefined : directory.slice(separator + 1)
+  if (
+    id == null ||
+    !SAFE_DIRECTORY_ID.test(id) ||
+    (kind !== 'album' && kind !== 'node')
+  ) {
+    throw new ProviderUserError({ message: 'Invalid SmugMug list directory' })
+  }
+  return {
+    kind,
+    id,
+    expectedPath:
+      kind === 'album'
+        ? `/api/v2/album/${id}!images`
+        : `/api/v2/node/${id}!children`,
+  }
+}
+
+const validateCursor = (cursor: string, expectedPath?: string): string => {
+  if (
+    !cursor.startsWith('/') ||
+    cursor.startsWith('//') ||
+    cursor.includes('://') ||
+    cursor.includes('\\') ||
+    [...cursor].some((character) => {
+      const code = character.charCodeAt(0)
+      return code <= 0x1f || code === 0x7f
+    })
+  ) {
+    throw new ProviderUserError({ message: 'Invalid SmugMug cursor' })
+  }
+
+  try {
+    decodeURI(cursor)
+    const url = new URL(cursor, API_HOST)
+    if (
+      url.origin !== API_HOST ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.hash !== '' ||
+      (expectedPath != null && url.pathname !== expectedPath)
+    ) {
+      throw new Error('cursor is not bound to the requested directory')
+    }
+  } catch {
+    throw new ProviderUserError({ message: 'Invalid SmugMug cursor' })
+  }
+
+  return cursor
+}
 
 // SmugMug is OAuth 1.0a: there's no Bearer token. Every request is signed with the
 // consumer (app) key/secret plus the user's access token/secret.
@@ -140,10 +208,7 @@ const getProbeMimeType = (candidate: string | undefined): string =>
 
 const getProbeUrl = (candidate: string | undefined): string => {
   if (candidate == null) {
-    throw new SmugMugProbeError(
-      'SmugMug original metadata is unavailable',
-      502,
-    )
+    throw new SmugMugProbeError('SmugMug original metadata is unavailable', 502)
   }
   try {
     const url = new URL(candidate)
@@ -156,10 +221,7 @@ const getProbeUrl = (candidate: string | undefined): string => {
     }
     return url.toString()
   } catch {
-    throw new SmugMugProbeError(
-      'SmugMug original metadata is unavailable',
-      502,
-    )
+    throw new SmugMugProbeError('SmugMug original metadata is unavailable', 502)
   }
 }
 
@@ -223,10 +285,7 @@ const getClient = ({
 const getPublicProbeKey = (companion: CompanionWithOptions): string => {
   const key = companion.options.providerOptions?.['smugmug']?.key
   if (!key) {
-    throw new SmugMugProbeError(
-      'SmugMug public probe is not configured',
-      503,
-    )
+    throw new SmugMugProbeError('SmugMug public probe is not configured', 503)
   }
   return key
 }
@@ -316,7 +375,7 @@ const withRateLimitRetry = async <T>(
       await new Promise((resolve) => setTimeout(resolve, waitTime))
     }
   }
-  return undefined as T
+  throw new Error('SmugMug rate-limit retry loop exhausted')
 }
 
 /**
@@ -354,30 +413,37 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         token: providerUserSession.accessToken,
         tokenSecret: providerUserSession.accessTokenSecret,
       })
-      const cursor =
+      const rawCursor =
         typeof query?.['cursor'] === 'string' ? query['cursor'] : undefined
+      const directoryTarget = getDirectoryTarget(directory)
 
       // Album: list its images.
-      if (directory?.startsWith('album:')) {
-        const albumKey = directory.slice('album:'.length)
+      if (directoryTarget?.kind === 'album') {
+        const cursor =
+          rawCursor == null
+            ? undefined
+            : validateCursor(rawCursor, directoryTarget.expectedPath)
         const res = cursor
           ? await apiGetCursor<SmugMugAlbumImagesResponse>(client, cursor)
           : await apiGet<SmugMugAlbumImagesResponse>(
               client,
-              `album/${albumKey}!images`,
+              `album/${directoryTarget.id}!images`,
               { count: PAGE_SIZE },
             )
         return adaptAlbumImages(res, undefined, directory)
       }
 
       // Folder node: list its children.
-      if (directory?.startsWith('node:')) {
-        const nodeId = directory.slice('node:'.length)
+      if (directoryTarget?.kind === 'node') {
+        const cursor =
+          rawCursor == null
+            ? undefined
+            : validateCursor(rawCursor, directoryTarget.expectedPath)
         const res = cursor
           ? await apiGetCursor<SmugMugNodeChildrenResponse>(client, cursor)
           : await apiGet<SmugMugNodeChildrenResponse>(
               client,
-              `node/${nodeId}!children`,
+              `node/${directoryTarget.id}!children`,
               { count: PAGE_SIZE },
             )
         return adaptNodeChildren(res, undefined, directory)
@@ -388,11 +454,15 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
       const user = authUser.Response?.User
       const username = user?.Name || user?.NickName
       const rootNodeId = user?.Uris?.Node?.Uri?.split('/').pop()
-      if (!cursor && !rootNodeId) {
+      if (rootNodeId == null || !SAFE_DIRECTORY_ID.test(rootNodeId)) {
         throw new Error(
-          'SmugMug !authuser response did not include a root node Uri',
+          'SmugMug !authuser response did not include a valid root node Uri',
         )
       }
+      const cursor =
+        rawCursor == null
+          ? undefined
+          : validateCursor(rawCursor, `/api/v2/node/${rootNodeId}!children`)
       const res = cursor
         ? await apiGetCursor<SmugMugNodeChildrenResponse>(client, cursor)
         : await apiGet<SmugMugNodeChildrenResponse>(
@@ -442,10 +512,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         image.LastUpdated == null ||
         imageSizeDetailsUri == null
       ) {
-        throw new SmugMugProbeError(
-          'SmugMug image metadata is incomplete',
-          502,
-        )
+        throw new SmugMugProbeError('SmugMug image metadata is incomplete', 502)
       }
 
       const imageSizeDetails = await apiGetUri<ImageSizeDetailsResponse>(
@@ -454,12 +521,27 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         providerUserSession ? undefined : { APIKey: apiKey },
         signal,
       )
-      const original = imageSizeDetails.Response?.ImageSizeDetails
-        ?.ImageSizeOriginal
+      const original =
+        imageSizeDetails.Response?.ImageSizeDetails?.ImageSizeOriginal
       const size = original?.Size ?? image.ArchivedSize
-      if (!Number.isSafeInteger(size) || size! <= 0) {
+      if (
+        typeof size !== 'number' ||
+        !Number.isSafeInteger(size) ||
+        size <= 0
+      ) {
         throw new SmugMugProbeError(
           'SmugMug original metadata is incomplete',
+          502,
+        )
+      }
+      if (
+        image.ArchivedSize != null &&
+        (!Number.isSafeInteger(image.ArchivedSize) ||
+          image.ArchivedSize <= 0 ||
+          image.ArchivedSize !== size)
+      ) {
+        throw new SmugMugProbeError(
+          'SmugMug original metadata is inconsistent',
           502,
         )
       }
@@ -496,8 +578,13 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         )
       }
 
-      // Compute stable source_version from canonical identity fields
-      const sourceVersion = `${image.Uri}|${image.Serial}|${image.LastUpdated}|${size}${image.ArchivedMD5 ? `|${image.ArchivedMD5}` : ''}`
+      const sourceVersion = getCanonicalSourceVersion({
+        canonicalUri: image.Uri!,
+        serial: image.Serial!,
+        lastUpdated: image.LastUpdated!,
+        size,
+        archivedMd5: image.ArchivedMD5,
+      })
 
       return {
         originalUrl,
@@ -542,6 +629,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
     end: number
     signal?: AbortSignal
   }): Promise<SmugMugProbeRange> {
+    const originalUrl = getProbeUrl(source.originalUrl)
     // Use OAuth-signed client when user session is provided, otherwise use public (unsigned) requests.
     const rangeClient = providerUserSession
       ? getClient({
@@ -550,7 +638,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
           tokenSecret: providerUserSession.accessTokenSecret,
         })
       : getProtectedGot({ allowLocalIPs: false })
-    const stream = rangeClient.stream.get(source.originalUrl, {
+    const stream = rangeClient.stream.get(originalUrl, {
       headers: { Range: `bytes=${start}-${end}` },
       throwHttpErrors: false,
       followRedirect: false,
@@ -596,7 +684,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         contentLength: expectedContentLength as number,
         mimeType: getProbeMimeType(
           getHeader(response.headers, 'content-type') ??
-          source.metadata.mimeType,
+            source.metadata.mimeType,
         ),
       }
     } catch (error) {

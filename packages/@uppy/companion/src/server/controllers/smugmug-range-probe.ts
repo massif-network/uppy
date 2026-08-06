@@ -1,8 +1,14 @@
 import type { Readable } from 'node:stream'
 import type { Request, RequestHandler, Response } from 'express'
-import { type SmugMugUserSession } from '../provider/smugmug/index.js'
-import { deriveUserHash, mintSourceToken, validateSourceToken } from '../helpers/source-token.js'
-import SmugMug, { SmugMugProbeError } from '../provider/smugmug/index.js'
+import {
+  deriveUserHash,
+  mintSourceTokenWithExpiry,
+  validateSourceToken,
+} from '../helpers/source-token.js'
+import SmugMug, {
+  SmugMugProbeError,
+  type SmugMugUserSession,
+} from '../provider/smugmug/index.js'
 
 const DEFAULT_MAX_PROBE_BYTES = 64 * 1024
 const DEFAULT_PROBE_DEADLINE_MS = 10_000
@@ -116,7 +122,10 @@ export const isSmugMugAuthenticatedRangeProbeEnabled = (): boolean =>
   process.env['NODE_ENV'] !== 'production'
 
 const sendError = (res: Response, error: unknown): void => {
-  if (error instanceof ProbeRequestError || error instanceof SmugMugProbeError) {
+  if (
+    error instanceof ProbeRequestError ||
+    error instanceof SmugMugProbeError
+  ) {
     res.status(error.statusCode).json({ message: error.message })
     return
   }
@@ -145,7 +154,11 @@ const getProviderAndId = (
 ): { provider: SmugMug; id: string } | undefined => {
   const provider = req.companion.provider
   const id = req.params['id']
-  if (!(provider instanceof SmugMug) || typeof id !== 'string' || id.length === 0) {
+  if (
+    !(provider instanceof SmugMug) ||
+    typeof id !== 'string' ||
+    id.length === 0
+  ) {
     res.sendStatus(400)
     return undefined
   }
@@ -158,7 +171,7 @@ export async function smugMugRangeProbeMetadata(
 ): Promise<void> {
   const request = getProviderAndId(req, res)
   if (request == null) return
-  const lifecycle = createProbeLifecycle(req, res, () => { })
+  const lifecycle = createProbeLifecycle(req, res, () => {})
   try {
     const source = await request.provider.getProbeSource({
       id: request.id,
@@ -240,23 +253,29 @@ export default async function smugMugRangeProbe(
   }
 }
 
-
 // ============================================================================
 // Phase 1: Production source API (/smugmug/source/*)
 // ============================================================================
 
 export type PrepareRequest = {
-  source_id: string   // Image ID (e.g., "image:ABC123")
+  source_id: string // Image ID (e.g., "image:ABC123")
 }
 
 export type PrepareResponse = {
   source_version: string
+  canonical_uri: string
+  image_key: string
+  serial: number
+  archived_size: number | null
+  archived_md5: string | null
+  last_updated: string
   size: number
   etag: string | null
   content_type: string
   accept_ranges: boolean
   chunk_max: number
-  source_token: string  // HMAC token for bytes endpoint
+  source_token: string
+  source_token_expires_at_ms: number
 }
 
 const DEFAULT_CHUNK_MAX = 64 * 1024
@@ -287,7 +306,9 @@ export async function smugMugSourcePrepare(
   const lifecycle = createProbeLifecycle(req, res, () => {})
   try {
     // Get OAuth token from the existing authenticated session
-    const providerUserSession = req.companion.providerUserSession as SmugMugUserSession | undefined
+    const providerUserSession = req.companion.providerUserSession as
+      | SmugMugUserSession
+      | undefined
     if (!providerUserSession?.accessToken) {
       res.status(401).json({ message: 'No authenticated session' })
       return
@@ -307,9 +328,9 @@ export async function smugMugSourcePrepare(
       DEFAULT_CHUNK_MAX,
     )
 
-    // Mint a source token for the bytes endpoint, bound to this user session
+    // Mint a source token for the bytes endpoint, bound to this user session.
     const secret = req.companion.options.secret
-    const sourceToken = mintSourceToken({
+    const mintedSourceToken = mintSourceTokenWithExpiry({
       secret,
       sourceId: body.source_id,
       sourceVersion: source.sourceVersion,
@@ -319,22 +340,36 @@ export async function smugMugSourcePrepare(
 
     const response: PrepareResponse = {
       source_version: source.sourceVersion,
+      canonical_uri: source.metadata.canonicalUri,
+      image_key: source.metadata.imageKey,
+      serial: source.metadata.serial,
+      archived_size: source.metadata.archivedSize ?? null,
+      archived_md5: source.metadata.archivedMd5 ?? null,
+      last_updated: source.metadata.lastUpdated,
       size: source.metadata.size,
       etag: source.metadata.etag ?? null,
       content_type: source.metadata.mimeType,
       accept_ranges: source.metadata.acceptRanges === 'bytes',
       chunk_max: chunkMax,
-      source_token: sourceToken,  // Token for bytes endpoint
+      source_token: mintedSourceToken.token,
+      source_token_expires_at_ms: mintedSourceToken.expiresAt,
     }
 
-    res.set({
-      'Cache-Control': 'no-store',
-      'X-Massif-Source-Version': source.sourceVersion,
-    }).status(200).json(response)
+    res
+      .set({
+        'Cache-Control': 'no-store',
+        'X-Massif-Source-Version': source.sourceVersion,
+      })
+      .status(200)
+      .json(response)
   } catch (error) {
     if (!lifecycle.signal.aborted && !res.headersSent) {
-      if (error instanceof ProbeRequestError || error instanceof SmugMugProbeError) {
-        const statusCode = error instanceof ProbeRequestError ? error.statusCode : 502
+      if (
+        error instanceof ProbeRequestError ||
+        error instanceof SmugMugProbeError
+      ) {
+        const statusCode =
+          error instanceof ProbeRequestError ? error.statusCode : 502
         res.status(statusCode).json({ message: error.message })
         return
       }
@@ -377,17 +412,23 @@ export async function smugMugSourceBytes(
 
   // Verify token matches the requested source
   if (tokenPayload.source_id !== sourceId) {
-    res.status(401).json({ message: 'Source token does not match requested source' })
+    res
+      .status(401)
+      .json({ message: 'Source token does not match requested source' })
     return
   }
 
   // Verify token was minted for this authenticated user session
-  const sessionForBinding = req.companion.providerUserSession as SmugMugUserSession | undefined
+  const sessionForBinding = req.companion.providerUserSession as
+    | SmugMugUserSession
+    | undefined
   if (
     !sessionForBinding?.accessToken ||
     tokenPayload.user_hash !== deriveUserHash(sessionForBinding.accessToken)
   ) {
-    res.status(401).json({ message: 'Source token does not match this session' })
+    res
+      .status(401)
+      .json({ message: 'Source token does not match this session' })
     return
   }
 
@@ -397,7 +438,9 @@ export async function smugMugSourceBytes(
   let streaming = false
   try {
     // OAuth session is already verified by middlewares.hasSessionAndProvider + verifyToken
-    const providerUserSession = req.companion.providerUserSession as SmugMugUserSession | undefined
+    const providerUserSession = req.companion.providerUserSession as
+      | SmugMugUserSession
+      | undefined
 
     const source = await provider.getProbeSource({
       id: sourceId,
@@ -410,7 +453,7 @@ export async function smugMugSourceBytes(
 
     // Verify source version hasn't changed
     if (tokenPayload.source_version !== source.sourceVersion) {
-      res.status(409).json({ 
+      res.status(409).json({
         message: 'Source has been modified',
         current_version: source.sourceVersion,
         expected_version: tokenPayload.source_version,
@@ -419,7 +462,7 @@ export async function smugMugSourceBytes(
     }
 
     const range = parseRange(req.header('Range'))
-    
+
     if (range.end >= source.metadata.size) {
       res.set('Content-Range', `bytes */${source.metadata.size}`)
       res.status(416).json({ message: 'Range exceeds source size' })
@@ -428,7 +471,7 @@ export async function smugMugSourceBytes(
 
     // Enforce chunk max from token
     if (range.end - range.start + 1 > tokenPayload.chunk_max) {
-      res.status(400).json({ 
+      res.status(400).json({
         message: `Range exceeds token chunk_max (${tokenPayload.chunk_max})`,
       })
       return
@@ -460,22 +503,28 @@ export async function smugMugSourceBytes(
     upstream.stream.once('error', onUpstreamError)
     res.once('finish', () => upstream.stream.off('error', onUpstreamError))
 
-    res.set({
-      'Cache-Control': 'no-store',
-      'Content-Range': upstream.contentRange,
-      'Content-Length': String(upstream.contentLength),
-      'Content-Type': upstream.mimeType,
-      'ETag': source.metadata.etag || '',
-      'Last-Modified': source.metadata.lastModified || '',
-      'Accept-Ranges': source.metadata.acceptRanges || '',
-      'X-Massif-Source-Version': source.sourceVersion,
-    }).status(206)
+    res
+      .set({
+        'Cache-Control': 'no-store',
+        'Content-Range': upstream.contentRange,
+        'Content-Length': String(upstream.contentLength),
+        'Content-Type': upstream.mimeType,
+        ETag: source.metadata.etag || '',
+        'Last-Modified': source.metadata.lastModified || '',
+        'Accept-Ranges': source.metadata.acceptRanges || '',
+        'X-Massif-Source-Version': source.sourceVersion,
+      })
+      .status(206)
     streaming = true
     upstream.stream.pipe(res)
   } catch (error) {
     if (!lifecycle.signal.aborted && !res.headersSent) {
-      if (error instanceof ProbeRequestError || error instanceof SmugMugProbeError) {
-        const statusCode = error instanceof ProbeRequestError ? error.statusCode : 502
+      if (
+        error instanceof ProbeRequestError ||
+        error instanceof SmugMugProbeError
+      ) {
+        const statusCode =
+          error instanceof ProbeRequestError ? error.statusCode : 502
         res.status(statusCode).json({ message: error.message })
         return
       }
