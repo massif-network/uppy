@@ -4875,9 +4875,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@massif-network/smugmug@workspace:packages/@massif-network/smugmug":
+"@massif-network/smugmug@workspace:packages/smugmug":
   version: 0.0.0-use.local
-  resolution: "@massif-network/smugmug@workspace:packages/@massif-network/smugmug"
+  resolution: "@massif-network/smugmug@workspace:packages/smugmug"
   dependencies:
     "@uppy/companion-client": "workspace:^"
     "@uppy/core": "workspace:^"

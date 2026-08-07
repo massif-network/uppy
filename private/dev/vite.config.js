@@ -37,8 +37,10 @@ const config = {
         replacement: `${PACKAGES_ROOT}@uppy/$1/src/index`,
       },
       {
-        find: /^@massif-network\/([^/]+)$/,
-        replacement: `${PACKAGES_ROOT}@massif-network/$1/src/index`,
+        // Not a scope-wide regex: the package keeps the @massif-network name
+        // but lives at packages/smugmug, so the mapping has to be literal.
+        find: /^@massif-network\/smugmug$/,
+        replacement: `${PACKAGES_ROOT}smugmug/src/index`,
       },
       {
         find: /^@uppy\/([^/]+)\/lib\/(.+?)(\.js)?$/,

@@ -13,6 +13,7 @@
   "ignore": [
     "angular",
     "@uppy-dev/dev",
+    "@massif-network/smugmug",
     "example-angular",
     "example-aws-companion",
     "example-aws-nodejs",

@@ -3,6 +3,7 @@
   "description": "Import files from SmugMug into Uppy (Massif fork plugin).",
   "version": "0.1.0",
   "license": "MIT",
+  "private": true,
   "type": "module",
   "sideEffects": false,
   "scripts": {
@@ -16,21 +17,15 @@
     "uppy-plugin",
     "smugmug"
   ],
-  "homepage": "https://github.com/massif-network/uppy/tree/main/packages/@massif-network/smugmug",
+  "homepage": "https://github.com/massif-network/uppy/tree/main/packages/smugmug",
   "bugs": {
     "url": "https://github.com/massif-network/massif/issues"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/massif-network/uppy.git",
-    "directory": "packages/@massif-network/smugmug"
+    "directory": "packages/smugmug"
   },
-  "files": [
-    "src",
-    "lib",
-    "dist",
-    "CHANGELOG.md"
-  ],
   "exports": {
     ".": "./lib/index.js",
     "./package.json": "./package.json"
@@ -43,9 +38,6 @@
   },
   "peerDependencies": {
     "@uppy/core": "workspace:^"
-  },
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
   },
   "devDependencies": {
     "@uppy/core": "workspace:^",

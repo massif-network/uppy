@@ -171,7 +171,17 @@ export default class SmugMug<M extends Meta, B extends Body>
       virtualList: true,
       ...(this.opts.rootDescriptorMode
         ? {
-            renderFooter: ({ cancelSelection }) => {
+            // The param type is annotated rather than inferred: this file is
+            // mirrored into massif-network/massif, where @uppy/provider-views
+            // resolves to the *public* 5.2.2, which has no `renderFooter` in
+            // its options type. Without the annotation the binding infers as
+            // `any` and fails under `strict` there (TS7031). Shape matches
+            // ProviderViewOptions.renderFooter in this fork.
+            renderFooter: ({
+              cancelSelection,
+            }: {
+              cancelSelection: () => void
+            }) => {
               const { currentFolderId, partialTree } = this.getPluginState()
               const root = buildSourceRootFromPartialTree(
                 currentFolderId,
