@@ -22,7 +22,7 @@ import locale from './locale.js'
 import { createMemoryStore } from './memory-store.js'
 import {
   buildSourceRootFromPartialTree,
-  resolveSourceRoot,
+  resolveSourceRoots,
   type SmugMugSourceRoot,
 } from './root-descriptor.js'
 import {
@@ -34,33 +34,26 @@ export type DescriptorModeFooterOptions = {
   canImport: boolean
   onSelect: () => void
   onCancel: () => void
-  /** How many folders are ticked; drives the label and the >1 hint. */
-  checkedCount?: number
-  /** Name of the resolved root, for a label that says what will happen. */
-  rootName?: string
+  /** Names of the resolved roots, for a label that says what will happen. */
+  rootNames?: string[]
 }
 
 export function renderDescriptorModeFooter({
   canImport,
   onSelect,
   onCancel,
-  checkedCount = 0,
-  rootName,
+  rootNames = [],
 }: DescriptorModeFooterOptions): h.JSX.Element {
-  // >1 ticked is the one case that is neither importable nor a mistake worth
-  // a disabled button with no explanation: each root would need its own
-  // import session. Importing their shared parent does what the user meant,
-  // because a folder root already fans out to one location per child album.
-  const tooMany = checkedCount > 1
+  // Name the target when there's one, count them when there are several, so
+  // the button always says what it is about to do.
   const label =
-    rootName != null ? `Import ${rootName}` : 'Import this album/folder'
+    rootNames.length === 1
+      ? `Import ${rootNames[0]}`
+      : rootNames.length > 1
+        ? `Import ${rootNames.length} folders`
+        : 'Import this album/folder'
   return (
     <div className="uppy-ProviderBrowser-footer uppy-SmugMug-descriptor-footer">
-      {tooMany ? (
-        <div className="uppy-SmugMug-descriptor-footer-hint">
-          {`${checkedCount} folders selected — pick just one, or open the folder that contains them and import that.`}
-        </div>
-      ) : null}
       <div className="uppy-ProviderBrowser-footer-buttons">
         <button
           className="uppy-u-reset uppy-c-btn uppy-c-btn-primary"
@@ -91,7 +84,18 @@ export type SmugMugOptions = CompanionPluginOptions & {
    * Callers on this path must never invoke `donePicking()`.
    */
   rootDescriptorMode?: boolean
-  /** Fired when `selectRoot()` resolves a valid root. */
+  /**
+   * Fired when `selectRoots()` resolves at least one root. Prefer this:
+   * ticking several folders is the documented selection model, and each
+   * root becomes its own location downstream.
+   */
+  onSourceRootsSelected?: (roots: SmugMugSourceRoot[]) => void
+  /**
+   * @deprecated Single-root callers only; ignored once
+   * `onSourceRootsSelected` is supplied. Never fires for a multi-folder
+   * selection, so a caller that can only represent one import session does
+   * not silently start several.
+   */
   onSourceRootSelected?: (root: SmugMugSourceRoot) => void
 }
 
@@ -202,16 +206,12 @@ export default class SmugMug<M extends Meta, B extends Body>
               cancelSelection: () => void
             }) => {
               const { currentFolderId, partialTree } = this.getPluginState()
-              const { root, checkedCount } = resolveSourceRoot(
-                currentFolderId,
-                partialTree,
-              )
+              const roots = resolveSourceRoots(currentFolderId, partialTree)
               return renderDescriptorModeFooter({
-                canImport: root != null,
-                checkedCount,
-                rootName: root?.name,
+                canImport: roots.length > 0,
+                rootNames: roots.map((r) => r.name),
                 onSelect: () => {
-                  this.selectRoot()
+                  this.selectRoots()
                 },
                 onCancel: cancelSelection,
               })
@@ -249,13 +249,24 @@ export default class SmugMug<M extends Meta, B extends Body>
    * ticked (too broad a target), or with several folders ticked (each would
    * need its own import session — see `resolveSourceRoot`).
    */
-  selectRoot(): SmugMugSourceRoot | null {
+  selectRoots(): SmugMugSourceRoot[] {
     const { currentFolderId, partialTree } = this.getPluginState()
-    const { root } = resolveSourceRoot(currentFolderId, partialTree)
-    if (root != null) {
-      this.opts.onSourceRootSelected?.(root)
+    const roots = resolveSourceRoots(currentFolderId, partialTree)
+    if (roots.length > 0) {
+      this.opts.onSourceRootsSelected?.(roots)
+      // Back-compat for callers wired before multi-root. Firing it for every
+      // root would start N unrelated import sessions in a caller that only
+      // expects one, so it only fires when the selection really is single.
+      if (roots.length === 1 && this.opts.onSourceRootsSelected == null) {
+        this.opts.onSourceRootSelected?.(roots[0]!)
+      }
     }
-    return root
+    return roots
+  }
+
+  /** @deprecated Use `selectRoots()`. */
+  selectRoot(): SmugMugSourceRoot | null {
+    return this.selectRoots()[0] ?? null
   }
 
   /**

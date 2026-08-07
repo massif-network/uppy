@@ -47,47 +47,75 @@ export function checkedFolderRoots(
 }
 
 /**
- * Resolve the import root the "Import this album/folder" action should use.
+ * Drop any ticked folder that already sits under another ticked folder.
  *
- * Two ways to designate one, in priority order:
+ * Ticking a folder and one of its descendants would enumerate the
+ * descendant twice. Distinct roots normally can't collide — Massif's
+ * `occurrenceId` is `${root}::${path}`, so sibling roots produce disjoint
+ * ids — but a nested pair yields the same file under two roots, and
+ * `resolveFileId` is session-scoped and deterministic, so the engine's
+ * ingest would hard-error on the duplicate file id. The ancestor already
+ * covers the descendant, so keeping only the ancestor loses nothing.
+ */
+function dropNestedRoots(
+  partialTree: PartialTree,
+  checkedIds: Set<string>,
+): (id: string) => boolean {
+  const parentOf = new Map<string, PartialTreeId>()
+  for (const item of partialTree) {
+    if (item.type === 'folder') parentOf.set(item.id, item.parentId)
+  }
+  return (id: string) => {
+    let cursor = parentOf.get(id) ?? null
+    while (cursor !== null) {
+      if (checkedIds.has(cursor)) return false
+      cursor = parentOf.get(cursor) ?? null
+    }
+    return true
+  }
+}
+
+/**
+ * Resolve the import roots the "Import" action should use.
  *
- * 1. **Tick it.** A checked folder is the root, wherever you are — including
- *    at the account root, where there is nothing to fall back to. This is
- *    the selection model every sibling provider (Dropbox/Drive/OneDrive)
- *    already uses, and the one the "Bulk import locations" banner describes.
- * 2. **Open it.** With nothing ticked, the folder you have navigated into is
- *    the root.
+ * Two ways to designate them, in priority order:
  *
- * Returns `null` at the account root with nothing ticked: that node has no
+ * 1. **Tick them.** Every checked folder is a root, wherever you are —
+ *    including at the account root, where there is nothing to fall back to.
+ *    This is the selection model every sibling provider
+ *    (Dropbox/Drive/OneDrive) already uses in the same Dashboard, and the
+ *    one the "Bulk import locations" banner describes: *each selected
+ *    folder will be imported as its own location*.
+ * 2. **Open one.** With nothing ticked, the folder you have navigated into
+ *    is the single root.
+ *
+ * Returns `[]` at the account root with nothing ticked: that node has no
  * stable provider id and is far too broad an import target. That guard is
  * deliberate — do not relax it.
  *
- * Only ever ONE root. A `folder` root already fans out to one location per
- * child album downstream (see Massif's `locationKeyFor`), so ticking several
- * siblings is served by importing their shared parent instead; returning
- * several roots here would mean several import sessions, which the caller
- * has no way to represent. `checkedCount` lets the caller say so rather than
- * silently importing whichever one happened to sort first.
+ * Note these two routes are equivalent by design, not by accident. Ticking
+ * every child of a folder and ticking the folder itself both end up
+ * importing the same files, because a `folder` root already fans out to one
+ * location per child album downstream (Massif's `locationKeyFor` keys on the
+ * top segment of each file's relative path).
  *
  * Must NOT lead to `ProviderViews.donePicking()` — that recursively drains
  * every checked folder via `afterFill` and materializes every descendant
  * into Uppy, exactly the heap defect this path exists to avoid.
  */
-export function resolveSourceRoot(
+export function resolveSourceRoots(
   currentFolderId: PartialTreeId,
   partialTree: PartialTree,
-): { root: SmugMugSourceRoot | null; checkedCount: number } {
+): SmugMugSourceRoot[] {
   const checked = checkedFolderRoots(partialTree)
   if (checked.length > 0) {
-    return {
-      root: checked.length === 1 ? checked[0]! : null,
-      checkedCount: checked.length,
-    }
+    const ids = new Set(checked.map((r) => r.requestPath))
+    return checked.filter((r) =>
+      dropNestedRoots(partialTree, ids)(r.requestPath),
+    )
   }
-  return {
-    root: buildSourceRootFromPartialTree(currentFolderId, partialTree),
-    checkedCount: 0,
-  }
+  const open = buildSourceRootFromPartialTree(currentFolderId, partialTree)
+  return open === null ? [] : [open]
 }
 
 /**

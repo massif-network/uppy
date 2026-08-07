@@ -6,7 +6,7 @@ import { describe, expect, test, vi } from 'vitest'
 import {
   buildSourceRootFromPartialTree,
   checkedFolderRoots,
-  resolveSourceRoot,
+  resolveSourceRoots,
 } from '../src/root-descriptor.js'
 import { renderDescriptorModeFooter } from '../src/SmugMug.js'
 
@@ -125,41 +125,63 @@ function withChecked(ids: string[]): PartialTree {
   )
 }
 
-describe('resolveSourceRoot', () => {
-  test('a ticked folder is the root at the account root, where there is no open folder to fall back to', () => {
+describe('resolveSourceRoots', () => {
+  test('a ticked folder is a root at the account root, where there is no open folder to fall back to', () => {
     // The reported bug: standing at the account root with `locations/`
-    // ticked, the Import button was disabled, because only the *open*
-    // folder was ever considered and that is null here.
-    const { root, checkedCount } = resolveSourceRoot(
-      null,
-      withChecked(['node:R']),
-    )
-    expect(checkedCount).toBe(1)
-    expect(root).toMatchObject({ requestPath: 'node:R', kind: 'folder' })
+    // ticked, Import stayed disabled, because only the *open* folder was
+    // ever considered and that is null here.
+    const roots = resolveSourceRoots(null, withChecked(['node:R']))
+    expect(roots).toHaveLength(1)
+    expect(roots[0]).toMatchObject({ requestPath: 'node:R', kind: 'folder' })
   })
 
-  test('a ticked folder wins over the folder currently open', () => {
-    const { root } = resolveSourceRoot('node:R', withChecked(['album:X']))
-    expect(root).toMatchObject({ requestPath: 'album:X', kind: 'album' })
+  test('every ticked sibling folder becomes its own root', () => {
+    // The other half of the same report: ticking ALL the folders inside
+    // `locations/` must import all of them, not be refused. (album:X is a
+    // *child* of node:R, so a sibling is added here rather than reusing it —
+    // nesting is covered separately below.)
+    const sibling = {
+      type: 'folder' as const,
+      id: 'album:Y',
+      cached: true,
+      nextPagePath: null,
+      status: 'checked' as const,
+      parentId: 'node:R',
+      data: { name: 'HD 2', icon: 'folder', isFolder: true },
+    }
+    const siblings: PartialTree = [...withChecked(['album:X']), sibling]
+    expect(
+      resolveSourceRoots('node:R', siblings).map((r) => r.requestPath),
+    ).toEqual(['album:X', 'album:Y'])
+  })
+
+  test('ticked folders win over the folder currently open', () => {
+    expect(
+      resolveSourceRoots('node:R', withChecked(['album:X'])).map(
+        (r) => r.requestPath,
+      ),
+    ).toEqual(['album:X'])
   })
 
   test('falls back to the open folder when nothing is ticked', () => {
-    const { root, checkedCount } = resolveSourceRoot('node:R', tree)
-    expect(checkedCount).toBe(0)
-    expect(root).toMatchObject({ requestPath: 'node:R' })
+    expect(
+      resolveSourceRoots('node:R', tree).map((r) => r.requestPath),
+    ).toEqual(['node:R'])
   })
 
   test('still refuses the whole account when nothing is ticked', () => {
-    expect(resolveSourceRoot(null, tree).root).toBeNull()
+    expect(resolveSourceRoots(null, tree)).toEqual([])
   })
 
-  test('reports the count but resolves no root when several folders are ticked', () => {
-    const { root, checkedCount } = resolveSourceRoot(
-      null,
-      withChecked(['node:R', 'album:X']),
-    )
-    expect(checkedCount).toBe(2)
-    expect(root).toBeNull()
+  test('drops a ticked folder nested under another ticked folder', () => {
+    // album:X is a child of node:R. Keeping both would enumerate album:X
+    // twice, and resolveFileId is deterministic per session, so the engine
+    // would hard-error on the duplicate file id.
+    expect(
+      resolveSourceRoots(null, withChecked(['node:R', 'album:X'])).map(
+        (r) => r.requestPath,
+      ),
+    ).toEqual(['node:R'])
   })
 
   test('ignores checked files — this path selects whole folders only', () => {
@@ -177,9 +199,7 @@ describe('resolveSourceRoot', () => {
         mimeType: 'image/jpeg',
       } as never,
     }
-    const { root, checkedCount } = resolveSourceRoot(null, [...tree, file])
-    expect(checkedCount).toBe(0)
-    expect(root).toBeNull()
+    expect(resolveSourceRoots(null, [...tree, file])).toEqual([])
   })
 })
 
