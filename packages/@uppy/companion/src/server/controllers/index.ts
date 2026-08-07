@@ -10,10 +10,10 @@ export { default as preauth } from './preauth.js'
 export { default as refreshToken } from './refresh-token.js'
 export { default as sendToken } from './send-token.js'
 export { default as simpleAuth } from './simple-auth.js'
-export { default as thumbnail } from './thumbnail.js'
 export {
   default as smugMugRangeProbe,
   smugMugRangeProbeMetadata,
-  smugMugSourcePrepare,
   smugMugSourceBytes,
+  smugMugSourcePrepare,
 } from './smugmug-range-probe.js'
+export { default as thumbnail } from './thumbnail.js'

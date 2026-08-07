@@ -4,6 +4,7 @@ import request from 'supertest'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 vi.mock('express-prom-bundle')
+
 import * as tokenService from '../src/server/helpers/jwt.js'
 import { getServer, setDefaultEnv } from './mockserver.js'
 
