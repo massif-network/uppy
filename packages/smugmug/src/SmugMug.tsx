@@ -22,6 +22,7 @@ import locale from './locale.js'
 import { createMemoryStore } from './memory-store.js'
 import {
   buildSourceRootFromPartialTree,
+  resolveSourceRoot,
   type SmugMugSourceRoot,
 } from './root-descriptor.js'
 import {
@@ -33,15 +34,33 @@ export type DescriptorModeFooterOptions = {
   canImport: boolean
   onSelect: () => void
   onCancel: () => void
+  /** How many folders are ticked; drives the label and the >1 hint. */
+  checkedCount?: number
+  /** Name of the resolved root, for a label that says what will happen. */
+  rootName?: string
 }
 
 export function renderDescriptorModeFooter({
   canImport,
   onSelect,
   onCancel,
+  checkedCount = 0,
+  rootName,
 }: DescriptorModeFooterOptions): h.JSX.Element {
+  // >1 ticked is the one case that is neither importable nor a mistake worth
+  // a disabled button with no explanation: each root would need its own
+  // import session. Importing their shared parent does what the user meant,
+  // because a folder root already fans out to one location per child album.
+  const tooMany = checkedCount > 1
+  const label =
+    rootName != null ? `Import ${rootName}` : 'Import this album/folder'
   return (
     <div className="uppy-ProviderBrowser-footer uppy-SmugMug-descriptor-footer">
+      {tooMany ? (
+        <div className="uppy-SmugMug-descriptor-footer-hint">
+          {`${checkedCount} folders selected — pick just one, or open the folder that contains them and import that.`}
+        </div>
+      ) : null}
       <div className="uppy-ProviderBrowser-footer-buttons">
         <button
           className="uppy-u-reset uppy-c-btn uppy-c-btn-primary"
@@ -49,7 +68,7 @@ export function renderDescriptorModeFooter({
           onClick={onSelect}
           type="button"
         >
-          Import this album/folder
+          {label}
         </button>
         <button
           className="uppy-u-reset uppy-c-btn uppy-c-btn-link"
@@ -67,12 +86,12 @@ export type SmugMugOptions = CompanionPluginOptions & {
   locale?: LocaleStrings<typeof locale>
   /**
    * When true, browsing does not eagerly expand every page of every folder
-   * (`loadAllFiles: false`) and the plugin exposes `selectCurrentFolderAsRoot`
+   * (`loadAllFiles: false`) and the plugin exposes `selectRoot`
    * / `getServiceWorkerGrant` for the upload-Service-Worker import path.
    * Callers on this path must never invoke `donePicking()`.
    */
   rootDescriptorMode?: boolean
-  /** Fired when `selectCurrentFolderAsRoot()` resolves a valid root. */
+  /** Fired when `selectRoot()` resolves a valid root. */
   onSourceRootSelected?: (root: SmugMugSourceRoot) => void
 }
 
@@ -183,14 +202,16 @@ export default class SmugMug<M extends Meta, B extends Body>
               cancelSelection: () => void
             }) => {
               const { currentFolderId, partialTree } = this.getPluginState()
-              const root = buildSourceRootFromPartialTree(
+              const { root, checkedCount } = resolveSourceRoot(
                 currentFolderId,
                 partialTree,
               )
               return renderDescriptorModeFooter({
                 canImport: root != null,
+                checkedCount,
+                rootName: root?.name,
                 onSelect: () => {
-                  this.selectCurrentFolderAsRoot()
+                  this.selectRoot()
                 },
                 onCancel: cancelSelection,
               })
@@ -215,12 +236,32 @@ export default class SmugMug<M extends Meta, B extends Body>
   }
 
   /**
-   * Resolve the currently-open folder/album as an import root, WITHOUT
-   * calling `ProviderViews.donePicking()` — that path recursively drains
-   * every checked folder (`afterFill`) and materializes every descendant
-   * file into Uppy, which is exactly what root-descriptor mode exists to
-   * avoid at 10,000+ image scale. Returns `null` at the account root (too
-   * broad a target) or before any folder has been opened.
+   * Resolve the import root — a ticked folder if there is exactly one,
+   * otherwise the folder currently open — and hand it to
+   * `onSourceRootSelected`.
+   *
+   * Deliberately does NOT call `ProviderViews.donePicking()`: that path
+   * recursively drains every checked folder (`afterFill`) and materializes
+   * every descendant file into Uppy, which is exactly what root-descriptor
+   * mode exists to avoid at 10,000+ image scale.
+   *
+   * Returns `null` when nothing resolves: at the account root with nothing
+   * ticked (too broad a target), or with several folders ticked (each would
+   * need its own import session — see `resolveSourceRoot`).
+   */
+  selectRoot(): SmugMugSourceRoot | null {
+    const { currentFolderId, partialTree } = this.getPluginState()
+    const { root } = resolveSourceRoot(currentFolderId, partialTree)
+    if (root != null) {
+      this.opts.onSourceRootSelected?.(root)
+    }
+    return root
+  }
+
+  /**
+   * @deprecated Use `selectRoot()`, which also honours a ticked folder.
+   * Kept so an existing caller that only ever meant "the open folder"
+   * doesn't change behaviour underneath it.
    */
   selectCurrentFolderAsRoot(): SmugMugSourceRoot | null {
     const { currentFolderId, partialTree } = this.getPluginState()
