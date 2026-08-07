@@ -37,7 +37,13 @@ const parsePositiveSafeInteger = (
   return Number.isSafeInteger(value) && value > 0 ? value : fallback
 }
 
-const parseRange = (value: string | undefined): ProbeRange => {
+/**
+ * `maxBytes` is the caller's cap: the dev-only `_range-probe` endpoints pass
+ * the probe limit (64 KiB default), the production source API passes the same
+ * `chunk_max` that `prepare` advertised — the two MUST be one number, or
+ * prepare promises a chunk width that `/bytes` then 400s.
+ */
+const parseRange = (value: string | undefined, maxBytes: number): ProbeRange => {
   if (value == null) {
     throw new ProbeRequestError('Range header is required', 400)
   }
@@ -54,15 +60,17 @@ const parseRange = (value: string | undefined): ProbeRange => {
   ) {
     throw new ProbeRequestError('Range is invalid', 400)
   }
-  const cap = parsePositiveSafeInteger(
-    process.env['COMPANION_SMUGMUG_RANGE_PROBE_MAX_BYTES'],
-    DEFAULT_MAX_PROBE_BYTES,
-  )
-  if (end - start + 1 > cap) {
+  if (end - start + 1 > maxBytes) {
     throw new ProbeRequestError('Range exceeds the probe limit', 400)
   }
   return { start, end }
 }
+
+const getRangeProbeMaxBytes = (): number =>
+  parsePositiveSafeInteger(
+    process.env['COMPANION_SMUGMUG_RANGE_PROBE_MAX_BYTES'],
+    DEFAULT_MAX_PROBE_BYTES,
+  )
 
 const getProbeDeadlineMs = (): number =>
   parsePositiveSafeInteger(
@@ -186,7 +194,7 @@ export default async function smugMugRangeProbe(
   const lifecycle = createProbeLifecycle(req, res, destroyUpstreamOnce)
   let streaming = false
   try {
-    const range = parseRange(req.header('Range'))
+    const range = parseRange(req.header('Range'), getRangeProbeMaxBytes())
     const source = await request.provider.getProbeSource({
       id: request.id,
       providerUserSession: req.companion.providerUserSession as any,
@@ -255,11 +263,42 @@ export type PrepareResponse = {
   etag: string | null
   content_type: string
   accept_ranges: boolean
+  /** SmugMug's ArchivedMD5 for the original bytes, when the API supplied it. */
+  archived_md5: string | null
   chunk_max: number
   source_token: string  // HMAC token for bytes endpoint
 }
 
-const DEFAULT_CHUNK_MAX = 64 * 1024
+/**
+ * Default matches the client engine's `MAX_REQUEST_BODY_BYTES` (8 MiB): the
+ * client refuses the whole session when the advertised `chunk_max` is smaller
+ * than its own part ceiling, so a conservative default here bricks every
+ * import that reaches prepare.
+ */
+const DEFAULT_CHUNK_MAX = 8 * 1024 * 1024
+
+const getSourceChunkMax = (): number =>
+  parsePositiveSafeInteger(
+    process.env['COMPANION_SMUGMUG_SOURCE_CHUNK_MAX'],
+    DEFAULT_CHUNK_MAX,
+  )
+
+/**
+ * Shared error tail for the production source API: honours the statusCode a
+ * probe error carries (401 re-grant, 409 handled earlier, 429 rate limit)
+ * instead of collapsing everything to 502, and re-emits an upstream
+ * Retry-After so the client's engine can pace itself on it.
+ */
+const sendSourceApiError = (res: Response, error: unknown, fallbackMessage: string): void => {
+  if (error instanceof ProbeRequestError || error instanceof SmugMugProbeError) {
+    if (error instanceof SmugMugProbeError && error.retryAfter !== undefined) {
+      res.set('Retry-After', error.retryAfter)
+    }
+    res.status(error.statusCode).json({ message: error.message })
+    return
+  }
+  res.status(502).json({ message: fallbackMessage })
+}
 
 export async function smugMugSourcePrepare(
   req: Request,
@@ -302,10 +341,7 @@ export async function smugMugSourcePrepare(
 
     if (lifecycle.signal.aborted) return
 
-    const chunkMax = parsePositiveSafeInteger(
-      process.env['COMPANION_SMUGMUG_SOURCE_CHUNK_MAX'],
-      DEFAULT_CHUNK_MAX,
-    )
+    const chunkMax = getSourceChunkMax()
 
     // Mint a source token for the bytes endpoint, bound to this user session
     const secret = req.companion.options.secret
@@ -323,6 +359,7 @@ export async function smugMugSourcePrepare(
       etag: source.metadata.etag ?? null,
       content_type: source.metadata.mimeType,
       accept_ranges: source.metadata.acceptRanges === 'bytes',
+      archived_md5: source.metadata.archivedMd5 ?? null,
       chunk_max: chunkMax,
       source_token: sourceToken,  // Token for bytes endpoint
     }
@@ -333,12 +370,7 @@ export async function smugMugSourcePrepare(
     }).status(200).json(response)
   } catch (error) {
     if (!lifecycle.signal.aborted && !res.headersSent) {
-      if (error instanceof ProbeRequestError || error instanceof SmugMugProbeError) {
-        const statusCode = error instanceof ProbeRequestError ? error.statusCode : 502
-        res.status(statusCode).json({ message: error.message })
-        return
-      }
-      res.status(502).json({ message: 'Failed to prepare source' })
+      sendSourceApiError(res, error, 'Failed to prepare source')
     }
   } finally {
     lifecycle.cleanup()
@@ -418,8 +450,8 @@ export async function smugMugSourceBytes(
       return
     }
 
-    const range = parseRange(req.header('Range'))
-    
+    const range = parseRange(req.header('Range'), getSourceChunkMax())
+
     if (range.end >= source.metadata.size) {
       res.set('Content-Range', `bytes */${source.metadata.size}`)
       res.status(416).json({ message: 'Range exceeds source size' })
@@ -474,12 +506,7 @@ export async function smugMugSourceBytes(
     upstream.stream.pipe(res)
   } catch (error) {
     if (!lifecycle.signal.aborted && !res.headersSent) {
-      if (error instanceof ProbeRequestError || error instanceof SmugMugProbeError) {
-        const statusCode = error instanceof ProbeRequestError ? error.statusCode : 502
-        res.status(statusCode).json({ message: error.message })
-        return
-      }
-      res.status(502).json({ message: 'Failed to fetch source bytes' })
+      sendSourceApiError(res, error, 'Failed to fetch source bytes')
     }
   } finally {
     if (!streaming) lifecycle.cleanup()

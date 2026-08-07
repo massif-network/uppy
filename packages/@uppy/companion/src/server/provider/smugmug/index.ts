@@ -84,11 +84,45 @@ type ImageSizeDetailsResponse = {
 export class SmugMugProbeError extends Error {
   statusCode: number
 
-  constructor(message: string, statusCode: number) {
+  /**
+   * Upstream `Retry-After` header value (seconds or HTTP-date), passed through
+   * verbatim when `statusCode` is 429 so the controller can re-emit it. The
+   * client's engine trusts a server Retry-After as a mandate, so dropping it
+   * here would turn a paced backoff into a hammer.
+   */
+  retryAfter: string | undefined
+
+  constructor(message: string, statusCode: number, retryAfter?: string) {
     super(message)
     this.name = 'SmugMugProbeError'
     this.statusCode = statusCode
+    this.retryAfter = retryAfter
   }
+}
+
+/**
+ * Map an upstream failure on the probe path to a client-meaningful status
+ * instead of collapsing everything to 502: 401 must reach the client verbatim
+ * (it is the only status that triggers a re-grant), and 429 must carry the
+ * upstream Retry-After. Everything else stays an opaque 502.
+ */
+const toProbeError = (error: unknown, fallbackMessage: string): SmugMugProbeError => {
+  if (error instanceof SmugMugProbeError) return error
+  if (error instanceof HTTPError) {
+    const status = error.response.statusCode
+    if (status === 401) {
+      return new SmugMugProbeError('SmugMug credentials were rejected upstream', 401)
+    }
+    if (status === 429) {
+      const retryAfter = error.response.headers['retry-after']
+      return new SmugMugProbeError(
+        'SmugMug is rate limiting requests',
+        429,
+        typeof retryAfter === 'string' ? retryAfter : undefined,
+      )
+    }
+  }
+  return new SmugMugProbeError(fallbackMessage, 502)
 }
 
 type SmugMugProbeSource = {
@@ -426,11 +460,15 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         : got.extend({})
       const apiKey = getPublicProbeKey(companion)
       const imageKey = toImageKey(id)
-      const imageResponse = await apiGet<ImageResponse>(
-        client,
-        `image/${imageKey}`,
-        providerUserSession ? undefined : { APIKey: apiKey },
-        signal,
+      const imageResponse = await withRateLimitRetry(
+        () =>
+          apiGet<ImageResponse>(
+            client,
+            `image/${imageKey}`,
+            providerUserSession ? undefined : { APIKey: apiKey },
+            signal,
+          ),
+        'provider.smugmug.probe.image',
       )
       const image = imageResponse.Response?.Image
       const imageSizeDetailsUri = getUri(image?.Uris?.ImageSizeDetails)
@@ -448,11 +486,15 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         )
       }
 
-      const imageSizeDetails = await apiGetUri<ImageSizeDetailsResponse>(
-        client,
-        imageSizeDetailsUri,
-        providerUserSession ? undefined : { APIKey: apiKey },
-        signal,
+      const imageSizeDetails = await withRateLimitRetry(
+        () =>
+          apiGetUri<ImageSizeDetailsResponse>(
+            client,
+            imageSizeDetailsUri,
+            providerUserSession ? undefined : { APIKey: apiKey },
+            signal,
+          ),
+        'provider.smugmug.probe.sizedetails',
       )
       const original = imageSizeDetails.Response?.ImageSizeDetails
         ?.ImageSizeOriginal
@@ -473,11 +515,19 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
             tokenSecret: providerUserSession.accessTokenSecret,
           })
         : getProtectedGot({ allowLocalIPs: false })
-      const head = await rangeClient.head(originalUrl, {
-        throwHttpErrors: false,
-        followRedirect: false,
-        ...(signal != null && { signal }),
-      })
+      // throwHttpErrors so an upstream 429/401 surfaces as HTTPError — the
+      // retry wrapper paces the 429s and toProbeError preserves the status.
+      // got treats 3xx as non-error, so the explicit check below still refuses
+      // redirects (followRedirect stays false).
+      const head = await withRateLimitRetry(
+        () =>
+          rangeClient.head(originalUrl, {
+            throwHttpErrors: true,
+            followRedirect: false,
+            ...(signal != null && { signal }),
+          }),
+        'provider.smugmug.probe.head',
+      )
       if (head.statusCode < 200 || head.statusCode >= 300) {
         throw new SmugMugProbeError(
           'SmugMug original metadata request failed',
@@ -519,11 +569,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         },
       }
     } catch (error) {
-      if (error instanceof SmugMugProbeError) throw error
-      throw new SmugMugProbeError(
-        'SmugMug original metadata request failed',
-        502,
-      )
+      throw toProbeError(error, 'SmugMug original metadata request failed')
     }
   }
 
@@ -585,6 +631,16 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         contentLength !== String(expectedContentLength)
       ) {
         stream.destroy()
+        // The stream is not retried here (bytes may already be piping on a
+        // success path), but a rate limit still reaches the client as 429 +
+        // Retry-After instead of an opaque 502.
+        if (response.statusCode === 429) {
+          const retryAfter = getHeader(response.headers, 'retry-after')
+          throw new SmugMugProbeError('SmugMug is rate limiting requests', 429, retryAfter)
+        }
+        if (response.statusCode === 401) {
+          throw new SmugMugProbeError('SmugMug credentials were rejected upstream', 401)
+        }
         throw new SmugMugProbeError(
           'SmugMug original did not honor the requested range',
           502,
