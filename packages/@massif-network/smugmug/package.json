@@ -1,7 +1,7 @@
 {
   "name": "@massif-network/smugmug",
   "description": "Import files from SmugMug into Uppy (Massif fork plugin).",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
