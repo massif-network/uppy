@@ -75,6 +75,54 @@ export function renderDescriptorModeFooter({
   )
 }
 
+export type AuthPromptOptions = {
+  /**
+   * `connect` — no stored credential; offer the embedder's connect action.
+   * `blocked` — connecting would discard queued work; explain instead.
+   * `transient` — a credential exists, so the failed browse is something else
+   *   (Uppy sets `authenticated: false` for ANY status >= 400, not just 401),
+   *   and sending the user through OAuth would not fix it.
+   */
+  mode: 'connect' | 'blocked' | 'transient'
+  message: string
+  connectLabel?: string
+  onConnect?: () => void
+}
+
+/**
+ * Body for `renderAuthForm`, replacing Uppy's own "Connect to X" button.
+ *
+ * Lives here rather than in the embedding app for the same reason
+ * `renderDescriptorModeFooter` does: this package already owns Preact, so the
+ * app can pass plain data and never take a Preact dependency of its own — which
+ * matters, because two Preact copies in one Dashboard render loop crash on
+ * hooks (see massif's pnpm `preact` override).
+ *
+ * Renders inside Uppy's chrome: `AuthView` still draws the plugin icon and the
+ * "Authenticate with SmugMug" heading around this.
+ */
+export function renderAuthPrompt({
+  mode,
+  message,
+  connectLabel = 'Connect to SmugMug',
+  onConnect,
+}: AuthPromptOptions): h.JSX.Element {
+  return (
+    <div className="uppy-Provider-authForm uppy-SmugMug-authPrompt">
+      <p>{message}</p>
+      {mode === 'connect' ? (
+        <button
+          className="uppy-u-reset uppy-c-btn uppy-c-btn-primary"
+          onClick={onConnect}
+          type="button"
+        >
+          {connectLabel}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 export type SmugMugOptions = CompanionPluginOptions & {
   locale?: LocaleStrings<typeof locale>
   /**
@@ -84,6 +132,24 @@ export type SmugMugOptions = CompanionPluginOptions & {
    * Callers on this path must never invoke `donePicking()`.
    */
   rootDescriptorMode?: boolean
+  /**
+   * Replaces the form inside Uppy's auth screen (the one shown when the plugin
+   * has no usable Companion token), so an embedder can offer its own connect
+   * flow instead of `Provider.login()`'s OAuth popup.
+   *
+   * Passed straight through to `ProviderViewOptions.renderAuthForm`, which
+   * `AuthView` calls in place of its default "Connect to SmugMug" button. The
+   * plugin icon and the `authenticateWithTitle` heading still render around it.
+   *
+   * Args are Uppy's: `onAuth` is the popup handler, which an embedder
+   * replacing the popup will simply not call.
+   */
+  renderAuthForm?: (args: {
+    pluginName: string
+    i18n: unknown
+    loading: boolean | string
+    onAuth: (authFormData: unknown) => Promise<void>
+  }) => h.JSX.Element
   /**
    * Fired when `selectRoots()` resolves at least one root. Prefer this:
    * ticking several folders is the documented selection model, and each
@@ -192,6 +258,9 @@ export default class SmugMug<M extends Meta, B extends Body>
       // SW's own bounded enumerator (not this view) walks the selected root.
       loadAllFiles: !this.opts.rootDescriptorMode,
       virtualList: true,
+      // Undefined is the same as absent here: ProviderView falls back to
+      // AuthView's own default form.
+      renderAuthForm: this.opts.renderAuthForm,
       ...(this.opts.rootDescriptorMode
         ? {
             // The param type is annotated rather than inferred: this file is
