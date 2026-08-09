@@ -32,6 +32,14 @@ export default function callback(
     oAuthState.getFromState(grantDynamic.state, 'origin', secret)
   const originString = typeof origin === 'string' ? origin : undefined
 
+  // Provider-agnostic verification data, not credential data -- kept out of
+  // providerUserSession and merged directly into the token payload below, so
+  // a consuming app can bind an adopted token to the caller that requested
+  // it without touching the provider-specific session shape.
+  const massifUserId =
+    grantDynamic.state &&
+    oAuthState.getFromState(grantDynamic.state, 'massifUserId', secret)
+
   const accessToken = req.session?.grant?.response?.access_token
   const refreshToken = req.session?.grant?.response?.refresh_token
 
@@ -87,7 +95,7 @@ export default function callback(
     req.id,
   )
   const uppyAuthToken = tokenService.generateEncryptedAuthToken(
-    { [providerName]: req.companion.providerUserSession },
+    { [providerName]: req.companion.providerUserSession, massifUserId },
     secret,
     providerClass.authStateExpiry,
   )

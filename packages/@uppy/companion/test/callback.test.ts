@@ -24,6 +24,67 @@ describe('test authentication callback', () => {
       })
   })
 
+  test('a massifUserId in the state blob is merged into the minted token', async () => {
+    const oauthState = await import('../src/server/helpers/oauth-state.js')
+    vi.spyOn(oauthState, 'getGrantDynamicFromRequest').mockReturnValue({
+      state: 'fake-state-value',
+    })
+    vi.spyOn(oauthState, 'getFromState').mockImplementation((_state, key) => {
+      if (key === 'massifUserId') return 'user-123'
+      if (key === 'authCallbackToken') return undefined
+
+      return 'http://localhost:3020'
+    })
+
+    const { getServer } = await import('./mockserver.js')
+    return request(await getServer())
+      .get('/drive/callback')
+      .expect(302)
+      .expect((res) => {
+        const location = res.header['location'] as string
+        const token = decodeURIComponent(
+          location.split('uppyAuthToken=')[1] ?? '',
+        )
+        const payload = tokenService.verifyEncryptedAuthToken(
+          token,
+          secret,
+          'drive',
+        ) as { massifUserId?: string }
+        expect(payload.massifUserId).toBe('user-123')
+      })
+  })
+
+  test('no massifUserId in the state blob means none in the minted token', async () => {
+    const oauthState = await import('../src/server/helpers/oauth-state.js')
+    vi.spyOn(oauthState, 'getGrantDynamicFromRequest').mockReturnValue({
+      state: 'fake-state-value',
+    })
+    vi.spyOn(oauthState, 'getFromState').mockImplementation((_state, key) => {
+      if (key === 'authCallbackToken') return undefined
+
+      // 'origin' and any other key resolve to a plain string; massifUserId
+      // is simply never present in this state blob.
+      return key === 'massifUserId' ? undefined : 'http://localhost:3020'
+    })
+
+    const { getServer } = await import('./mockserver.js')
+    return request(await getServer())
+      .get('/drive/callback')
+      .expect(302)
+      .expect((res) => {
+        const location = res.header['location'] as string
+        const token = decodeURIComponent(
+          location.split('uppyAuthToken=')[1] ?? '',
+        )
+        const payload = tokenService.verifyEncryptedAuthToken(
+          token,
+          secret,
+          'drive',
+        ) as { massifUserId?: string }
+        expect(payload.massifUserId).toBeUndefined()
+      })
+  })
+
   test('authentication callback sets cookie', async () => {
     const { getServer, grantToken } = await import('./mockserver.js')
     return request(await getServer())

@@ -26,6 +26,7 @@ export type Opts = {
   companionCookiesRule?: 'same-origin' | 'include' | 'omit'
   companionHeaders?: CompanionHeaders
   companionKeysParams?: Record<string, string>
+  extraAuthQueryParams?: Record<string, string>
 }
 
 // Remove the trailing slash so we can always safely append /xyz.

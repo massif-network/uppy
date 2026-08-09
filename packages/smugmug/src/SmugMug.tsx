@@ -235,6 +235,7 @@ export default class SmugMug<M extends Meta, B extends Body>
       companionHeaders: this.opts.companionHeaders,
       companionKeysParams: this.opts.companionKeysParams,
       companionCookiesRule: this.opts.companionCookiesRule,
+      extraAuthQueryParams: this.opts.extraAuthQueryParams,
       provider: 'smugmug',
       pluginId: this.id,
       // SmugMug is OAuth 1.0a: tokens don't expire and there is no refresh token.

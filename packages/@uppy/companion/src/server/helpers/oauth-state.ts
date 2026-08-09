@@ -10,6 +10,13 @@ export type OAuthState = {
   companionInstance?: string
   customerDefinedAllowedOrigins?: string[]
   authCallbackToken?: string
+  /**
+   * Caller-supplied identifier, opaque to Companion, echoed back into the
+   * minted auth token's payload (see callback.ts). Self-attested at connect
+   * time — the consuming app is responsible for verifying it against its own
+   * authenticated caller when the token is later redeemed.
+   */
+  massifUserId?: string
 }
 
 export const encodeState = (

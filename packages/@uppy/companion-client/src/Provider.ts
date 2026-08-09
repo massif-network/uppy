@@ -198,7 +198,7 @@ export default class Provider<M extends Meta, B extends Body>
     const authCallbackToken = crypto.randomUUID()
 
     const link = this.authUrl({
-      query: { uppyVersions },
+      query: { uppyVersions, ...this.opts.extraAuthQueryParams },
       authFormData,
       authCallbackToken,
     })
