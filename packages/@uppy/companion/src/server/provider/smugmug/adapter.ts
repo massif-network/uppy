@@ -39,6 +39,13 @@ export type SmugMugAlbumImagesResponse = {
     AlbumImage?: SmugMugAlbumImage[]
     Pages?: { NextPage?: string }
   }
+  // Present only when the request asked for `_expand=Album`. Keyed by the
+  // expanded resource's URI (`/api/v2/album/<key>`), so we take the sole entry
+  // rather than reconstructing the key.
+  Expansions?: Record<
+    string,
+    { Album?: { Description?: string | undefined } | undefined } | undefined
+  >
 }
 
 // Only Folder and Album nodes are navigable; everything else (Page, System, …) is skipped.
@@ -139,6 +146,33 @@ export function normalizeCaption(
   return text
 }
 
+/**
+ * Pull the album's own description out of an `_expand=Album` response.
+ *
+ * A gallery is a folder item on the client and folders never become Uppy files,
+ * so there is nothing folder-shaped to hang this on. Instead it is stamped onto
+ * every image in the album and the app reads it back off the group — see
+ * massif-network/massif#829.
+ *
+ * Returned as plain text: the destination is rendered through a markdown parser
+ * and edited in a plain textarea, so markup would either be mangled or shown
+ * literally. Note this drops link hrefs — an accepted trade for a column that
+ * is authored as plain text everywhere else.
+ */
+export function extractAlbumDescription(
+  res: SmugMugAlbumImagesResponse,
+): string | undefined {
+  const expansions = res.Expansions
+  if (!expansions) return undefined
+  for (const expansion of Object.values(expansions)) {
+    const description = expansion?.Album?.Description
+    if (!description) continue
+    const text = stripHtml(description)
+    if (text) return text
+  }
+  return undefined
+}
+
 // An Album node references its album as `/api/v2/album/<AlbumKey>`; pull the key out
 // so we can hit the `!images` endpoint when the user opens it.
 const getAlbumKey = (node: SmugMugNode): string | undefined => {
@@ -203,6 +237,7 @@ export function adaptAlbumImages(
   directory: string | undefined,
 ): ProviderListResponse {
   const images = res.Response?.AlbumImage ?? []
+  const albumDescription = extractAlbumDescription(res)
 
   const items = images
     .filter((image) => !image.IsVideo && image.ImageKey != null)
@@ -226,6 +261,9 @@ export function adaptAlbumImages(
         // `Title` is deliberately not mapped: it defaults to the filename on
         // many accounts, and downstream falls back to alt_text for display.
         caption: normalizeCaption(image.Caption, image.FileName),
+        // Denormalised onto every image so the app can recover it per folder
+        // group; identical for all images in the album.
+        albumDescription,
       }
     })
 

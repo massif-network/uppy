@@ -36,6 +36,14 @@ export interface ProviderListItem {
    * Uppy file's `data`, so this reaches the client without further plumbing.
    */
   caption?: string | undefined
+  /**
+   * Description of the container this item belongs to (SmugMug's album
+   * `Description`), denormalised onto every child item. Containers are folder
+   * items on the client and folders never become Uppy files, so there is no
+   * folder-shaped object to carry it — the app recovers it per folder group.
+   * Plain text, same contract as `caption`.
+   */
+  albumDescription?: string | undefined
 }
 
 // todo use these types in the Uppy client
