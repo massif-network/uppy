@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import {
   adaptAlbumImages,
   adaptNodeChildren,
+  extractAlbumDescription,
   normalizeCaption,
   type SmugMugAlbumImage,
   type SmugMugAlbumImagesResponse,
@@ -188,5 +189,95 @@ describe('adaptAlbumImages caption mapping', () => {
     expect(item?.caption).toBeUndefined()
     // Title still participates in the display name fallback, unchanged.
     expect(item?.name).toBe('a.jpg')
+  })
+})
+
+// A gallery is a folder item, and folders never become Uppy files — so the
+// album's description is denormalised onto every image and the app recovers it
+// per folder group. Shape verified against the live API: `_expand=Album` puts
+// the album under `Expansions`, keyed by its URI.
+describe('album description', () => {
+  const expanded = (
+    description: string | undefined,
+  ): SmugMugAlbumImagesResponse => ({
+    Response: { AlbumImage: [{ ImageKey: 'k1', FileName: 'a.jpg' }] },
+    Expansions: {
+      '/api/v2/album/C2Jd35': { Album: { Description: description } },
+    },
+  })
+
+  test('extracts the description from the expansion', () => {
+    expect(
+      extractAlbumDescription(
+        expanded('More time in the med tent than swimming.'),
+      ),
+    ).toBe('More time in the med tent than swimming.')
+  })
+
+  test('strips markup, matching the caption contract', () => {
+    expect(
+      extractAlbumDescription(
+        expanded(
+          '<strong style="font-size:14px;">Big monitor?&nbsp;Widen your browser.</strong>',
+        ),
+      ),
+    ).toBe('Big monitor? Widen your browser.')
+    // Link text survives; the href does not — an accepted trade for a column
+    // rendered through a markdown parser and edited as plain text.
+    expect(
+      extractAlbumDescription(
+        expanded('Details in <a href="https://example.com/x">the blog</a>.'),
+      ),
+    ).toBe('Details in the blog.')
+  })
+
+  test('returns undefined when there is no description to take', () => {
+    expect(extractAlbumDescription(expanded(undefined))).toBeUndefined()
+    expect(extractAlbumDescription(expanded(''))).toBeUndefined()
+    expect(extractAlbumDescription(expanded('  '))).toBeUndefined()
+    expect(extractAlbumDescription(expanded('<p>&nbsp;</p>'))).toBeUndefined()
+    // No `_expand` on the request (e.g. an un-patched cursor page).
+    expect(
+      extractAlbumDescription({ Response: { AlbumImage: [] } }),
+    ).toBeUndefined()
+    expect(extractAlbumDescription({ Expansions: {} })).toBeUndefined()
+  })
+
+  test('stamps the description on every image in the album', () => {
+    const { items } = adaptAlbumImages(
+      {
+        Response: {
+          AlbumImage: [
+            { ImageKey: 'k1', FileName: 'a.jpg' },
+            { ImageKey: 'k2', FileName: 'b.jpg', Caption: 'Its own caption.' },
+            // Videos are still filtered out.
+            { ImageKey: 'k3', FileName: 'c.mov', IsVideo: true },
+          ],
+        },
+        Expansions: {
+          '/api/v2/album/C2Jd35': { Album: { Description: 'Shot at dawn.' } },
+        },
+      },
+      undefined,
+      'album:C2Jd35',
+    )
+
+    expect(items).toHaveLength(2)
+    expect(items.map((i) => i.albumDescription)).toEqual([
+      'Shot at dawn.',
+      'Shot at dawn.',
+    ])
+    // The album description and the per-image caption are independent.
+    expect(items[1]?.caption).toBe('Its own caption.')
+  })
+
+  test('leaves albumDescription undefined when the album has none', () => {
+    const { items } = adaptAlbumImages(
+      { Response: { AlbumImage: [{ ImageKey: 'k1', FileName: 'a.jpg' }] } },
+      undefined,
+      'album:C2Jd35',
+    )
+
+    expect(items[0]?.albumDescription).toBeUndefined()
   })
 })
