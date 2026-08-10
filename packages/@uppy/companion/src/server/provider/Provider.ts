@@ -28,6 +28,14 @@ export interface ProviderListItem {
   mimeType?: string | null | undefined
   size?: number | null | undefined
   thumbnail?: string | null | undefined
+  /**
+   * Provider-authored caption for the item, when the provider exposes one
+   * (SmugMug's `AlbumImage.Caption`). Plain text — providers are expected to
+   * strip any markup before setting it. The list controller serialises the item
+   * verbatim and `companionFileToUppyFile` preserves the whole object as the
+   * Uppy file's `data`, so this reaches the client without further plumbing.
+   */
+  caption?: string | undefined
 }
 
 // todo use these types in the Uppy client
