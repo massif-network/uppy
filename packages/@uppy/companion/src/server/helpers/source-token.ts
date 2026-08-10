@@ -73,8 +73,16 @@ export function validateSourceToken({
       .createHmac('sha256', secret)
       .update(payloadB64)
       .digest('base64url')
-    
-    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+
+    const signatureBuf = Buffer.from(signature)
+    const expectedSigBuf = Buffer.from(expectedSig)
+    // Explicit length check before timingSafeEqual: it throws RangeError on a
+    // length mismatch rather than returning false, so relying on the
+    // surrounding try/catch to fail closed works but reads as accidental.
+    if (signatureBuf.length !== expectedSigBuf.length) {
+      return null
+    }
+    if (!crypto.timingSafeEqual(signatureBuf, expectedSigBuf)) {
       return null
     }
     
