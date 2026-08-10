@@ -134,13 +134,28 @@ const apiGet = async <T>(
     .json<T>()
 
 // Follow a SmugMug `NextPage` cursor (a relative `/api/v2/...` URI).
-const apiGetCursor = async <T>(client: Got, cursor: string): Promise<T> =>
-  client
-    .get(`${API_HOST}${cursor}`, {
+//
+// `extraParams` re-applies query params that SmugMug does NOT carry over into
+// its own `NextPage` URI. Verified against the live API: a request made with
+// `_expand=Album` yields `NextPage` without it, so page 2+ would come back with
+// no `Expansions` and every image past the first page would lose its album
+// description.
+const apiGetCursor = async <T>(
+  client: Got,
+  cursor: string,
+  extraParams?: Record<string, string>,
+): Promise<T> => {
+  const url = new URL(`${API_HOST}${cursor}`)
+  for (const [key, value] of Object.entries(extraParams ?? {})) {
+    if (!url.searchParams.has(key)) url.searchParams.set(key, value)
+  }
+  return client
+    .get(url.toString(), {
       headers: { Accept: 'application/json' },
       responseType: 'json',
     })
     .json<T>()
+}
 
 /**
  * Run `fn`, retrying on SmugMug 429 rate-limit responses with backoff. Honours a
@@ -233,12 +248,17 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
       // Album: list its images.
       if (directory?.startsWith('album:')) {
         const albumKey = directory.slice('album:'.length)
+        // `_expand=Album` rides on the request we already make, so the album's
+        // own description costs no extra round trip. It must be re-applied to
+        // the cursor too — SmugMug drops it from `NextPage`.
         const res = cursor
-          ? await apiGetCursor<SmugMugAlbumImagesResponse>(client, cursor)
+          ? await apiGetCursor<SmugMugAlbumImagesResponse>(client, cursor, {
+              _expand: 'Album',
+            })
           : await apiGet<SmugMugAlbumImagesResponse>(
               client,
               `album/${albumKey}!images`,
-              { _count: PAGE_SIZE },
+              { _count: PAGE_SIZE, _expand: 'Album' },
             )
         return adaptAlbumImages(res, undefined, directory)
       }
