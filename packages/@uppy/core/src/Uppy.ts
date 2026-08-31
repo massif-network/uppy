@@ -324,6 +324,14 @@ export interface _UppyEventMap<M extends Meta, B extends Body> {
    * during it. There is no percentage: the tree size is unknown until the end.
    */
   'provider-walk-progress': (progress: {
+    /**
+     * Which provider plugin emitted this (e.g. `Dropbox`, `SmugMug`). The event
+     * is global to the Uppy instance and several provider plugins are commonly
+     * installed at once, so without this a host cannot tell whose progress it is
+     * — and a cancelled walk can emit its terminal report after the user has
+     * switched panels.
+     */
+    providerId: string
     filesFound: number
     foldersWalked: number
     foldersRemaining: number
