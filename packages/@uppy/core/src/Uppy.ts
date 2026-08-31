@@ -316,6 +316,26 @@ export interface _UppyEventMap<M extends Meta, B extends Body> {
   'file-added': (file: UppyFile<M, B>) => void
   'file-removed': (file: UppyFile<M, B>) => void
   'files-added': (files: UppyFile<M, B>[]) => void
+  /**
+   * Progress of a remote provider's recursive folder walk (see
+   * `@uppy/provider-views` afterFill). Emitted per completed folder while the
+   * user waits for a large selection to be enumerated — files are not added to
+   * Uppy until the whole walk finishes, so this is the only signal available
+   * during it. There is no percentage: the tree size is unknown until the end.
+   */
+  'provider-walk-progress': (progress: {
+    /**
+     * Which provider plugin emitted this (e.g. `Dropbox`, `SmugMug`). The event
+     * is global to the Uppy instance and several provider plugins are commonly
+     * installed at once, so without this a host cannot tell whose progress it is
+     * — and a cancelled walk can emit its terminal report after the user has
+     * switched panels.
+     */
+    providerId: string
+    filesFound: number
+    foldersWalked: number
+    foldersRemaining: number
+  }) => void
   'info-hidden': () => void
   'info-visible': () => void
   'is-offline': () => void

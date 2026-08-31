@@ -634,3 +634,202 @@ describe('getBreadcrumbs()', () => {
     expect(result.map((f) => f.id)).toEqual([null])
   })
 })
+
+describe('afterFill() walk progress', () => {
+  // A provider tree N folders wide, each holding `filesPerFolder` files.
+  const wideTree = (folderCount: number): PartialTree => [
+    _root('ourRoot'),
+    ...Array.from({ length: folderCount }, (_unused, i) =>
+      // `checked` + not-yet-`cached` is what makes afterFill walk a folder.
+      _folder(`f${i}`, {
+        parentId: 'ourRoot',
+        status: 'checked',
+        cached: false,
+      }),
+    ),
+  ]
+
+  const listing = (filesPerFolder: number) => async (directory: string) => ({
+    nextPagePath: null,
+    items: Array.from({ length: filesPerFolder }, (_unused, i) => ({
+      id: `${directory}_i${i}`,
+      requestPath: `${directory}_i${i}`,
+      name: `${directory}_i${i}.jpg`,
+      isFolder: false,
+    })) as never,
+  })
+
+  it('reports a running file count and the folders still queued', async () => {
+    const progress: Array<{
+      filesFound: number
+      foldersWalked: number
+      foldersRemaining: number
+    }> = []
+
+    await afterFill(
+      wideTree(8),
+      listing(5) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    expect(progress.length).toBeGreaterThan(0)
+    const last = progress.at(-1)!
+    // 8 folders x 5 files, and the walk is finished.
+    expect(last.filesFound).toEqual(40)
+    expect(last.foldersWalked).toEqual(8)
+    expect(last.foldersRemaining).toEqual(0)
+
+    // Monotonic: a progress report never goes backwards.
+    for (let i = 1; i < progress.length; i++) {
+      expect(progress[i].filesFound).toBeGreaterThanOrEqual(
+        progress[i - 1].filesFound,
+      )
+      expect(progress[i].foldersWalked).toBeGreaterThanOrEqual(
+        progress[i - 1].foldersWalked,
+      )
+    }
+  })
+
+  // Regression: the incremental counter must be SEEDED from files already
+  // checked in the partial tree. A user who opened a folder earlier has checked
+  // files in `cached` folders that this walk never revisits, so starting from
+  // zero under-reports the real selection in every event — including the final
+  // one, which is what a UI settles on.
+  it('counts files already checked before the walk started', async () => {
+    // prettier-ignore
+    const tree: PartialTree = [
+      _root('ourRoot'),
+      // Already fetched last time round, so afterFill will not walk it.
+      _folder('cachedOne', {
+        parentId: 'ourRoot',
+        status: 'checked',
+        cached: true,
+      }),
+      _file('cachedOne_a', { parentId: 'cachedOne', status: 'checked' }),
+      _file('cachedOne_b', { parentId: 'cachedOne', status: 'checked' }),
+      // Still to walk.
+      _folder('fresh', {
+        parentId: 'ourRoot',
+        status: 'checked',
+        cached: false,
+      }),
+    ]
+
+    const progress: Array<{ filesFound: number }> = []
+    await afterFill(
+      tree,
+      (async () => ({
+        nextPagePath: null,
+        items: [
+          {
+            id: 'fresh_1',
+            requestPath: 'fresh_1',
+            name: 'a.jpg',
+            isFolder: false,
+          },
+          {
+            id: 'fresh_2',
+            requestPath: 'fresh_2',
+            name: 'b.jpg',
+            isFolder: false,
+          },
+          {
+            id: 'fresh_3',
+            requestPath: 'fresh_3',
+            name: 'c.jpg',
+            isFolder: false,
+          },
+        ],
+      })) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    // 2 already checked + 3 newly fetched. Counting only the new ones gives 3.
+    expect(progress.at(-1)!.filesFound).toEqual(5)
+  })
+
+  // p-queue emits `completed` BEFORE decrementing `pending`, so the folder whose
+  // completion triggered the callback is still counted in `queue.pending`.
+  // Without excluding it, every event overstates the work left by one and the
+  // final per-task event can never reach zero — a UI would sit on "1 to go".
+  it('does not count the just-completed folder as remaining', async () => {
+    const folderCount = 5
+    const progress: Array<{ foldersWalked: number; foldersRemaining: number }> =
+      []
+
+    await afterFill(
+      [
+        _root('ourRoot'),
+        ...Array.from({ length: folderCount }, (_unused, i) =>
+          _folder(`f${i}`, {
+            parentId: 'ourRoot',
+            status: 'checked',
+            cached: false,
+          }),
+        ),
+      ],
+      (async () => ({ nextPagePath: null, items: [] })) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    // These folders have no children, so nothing is ever added to the queue
+    // beyond the initial 5: walked + remaining must account for all of them on
+    // every single event.
+    for (const p of progress) {
+      expect(p.foldersWalked + p.foldersRemaining).toEqual(folderCount)
+    }
+    expect(progress.at(-1)!.foldersRemaining).toEqual(0)
+  })
+
+  // `queue.onIdle()` resolves once every task has SETTLED, rejections included,
+  // and afterFill returns the partial tree regardless. The terminal report must
+  // therefore not claim zero remaining, or a failed/aborted walk looks identical
+  // to a clean one while files are silently missing.
+  it('does not report zero remaining when a folder listing failed', async () => {
+    const progress: Array<{ foldersWalked: number; foldersRemaining: number }> =
+      []
+
+    await afterFill(
+      [
+        _root('ourRoot'),
+        _folder('ok', {
+          parentId: 'ourRoot',
+          status: 'checked',
+          cached: false,
+        }),
+        _folder('boom', {
+          parentId: 'ourRoot',
+          status: 'checked',
+          cached: false,
+        }),
+      ],
+      (async (directory: string) => {
+        if (directory === 'boom') throw new Error('network down')
+        return {
+          nextPagePath: null,
+          items: [
+            { id: 'f', requestPath: 'f', name: 'a.jpg', isFolder: false },
+          ],
+        }
+      }) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    const terminal = progress.at(-1)!
+    expect(terminal.foldersWalked).toEqual(1)
+    // 2 queued, 1 walked — the failed folder must still show as outstanding.
+    expect(terminal.foldersRemaining).toEqual(1)
+  })
+
+  // NOTE: there is deliberately no perf test for the incremental counting.
+  // A wall-clock assertion here does not work: at test-sized trees the old
+  // per-event full rescan completes in milliseconds, so the guard passed
+  // against the very implementation it was meant to reject, and at larger sizes
+  // it would be flaky on a loaded runner. The two implementations produce
+  // IDENTICAL output, so there is nothing deterministic left to assert — the
+  // complexity is documented at the counter instead.
+})

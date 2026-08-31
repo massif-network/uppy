@@ -513,10 +513,25 @@ export default class ProviderView<M extends Meta, B extends Body> {
         partialTree,
         (path: PartialTreeId) => this.provider.list(path, { signal }),
         this.validateSingleFile,
-        (n) => {
+        (progress) => {
           this.setLoading(
-            this.plugin.uppy.i18n('addedNumFiles', { numFiles: n }),
+            this.plugin.uppy.i18n('addedNumFiles', {
+              numFiles: progress.filesFound,
+            }),
           )
+          // Also surfaced as an event so an embedding app can render its own
+          // progress. The loading label is Uppy's internal UI and is i18n'd, so
+          // it is not something a host can reliably read.
+          //
+          // Stamped with the plugin id because the event is global to the Uppy
+          // instance: several provider plugins are usually installed together,
+          // and a cancelled walk can emit its terminal report after the user has
+          // moved to another panel. Without this a host cannot tell whose
+          // numbers it is showing.
+          this.plugin.uppy.emit('provider-walk-progress', {
+            ...progress,
+            providerId: this.plugin.id,
+          })
         },
       )
 
