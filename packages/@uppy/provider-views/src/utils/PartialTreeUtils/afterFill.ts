@@ -15,12 +15,29 @@ export type ApiList = (directory: PartialTreeId) => Promise<{
   items: CompanionFile[]
 }>
 
+/**
+ * Progress of a recursive provider folder walk.
+ *
+ * There is deliberately no percentage: the tree's size is unknown until the walk
+ * finishes, so the only honest figures are how much has been found so far and how
+ * many folders are still queued. `foldersRemaining` reaching 0 is the end.
+ */
+export type WalkProgress = {
+  /** Files discovered and selected so far. */
+  filesFound: number
+  /** Folders whose listing has completed. */
+  foldersWalked: number
+  /** Folders still queued or in flight. */
+  foldersRemaining: number
+}
+
 const recursivelyFetch = async (
   queue: PQueue,
   poorTree: PartialTree,
   poorFolder: PartialTreeFolderNode,
   apiList: ApiList,
   validateSingleFile: (file: CompanionFile) => string | null,
+  counters: { filesFound: number; foldersWalked: number },
 ) => {
   let items: CompanionFile[] = []
   let currentPath: PartialTreeId = poorFolder.cached
@@ -64,9 +81,24 @@ const recursivelyFetch = async (
   poorFolder.nextPagePath = null
   poorTree.push(...files, ...folders)
 
+  // Counted incrementally. Re-deriving this by filtering `poorTree` on every
+  // completed folder is O(tree) per event, which is quadratic over a large walk
+  // — the exact cost this progress reporting exists to make visible.
+  counters.foldersWalked += 1
+  for (const file of files) {
+    if (file.status === 'checked') counters.filesFound += 1
+  }
+
   folders.forEach(async (folder) => {
     queue.add(() =>
-      recursivelyFetch(queue, poorTree, folder, apiList, validateSingleFile),
+      recursivelyFetch(
+        queue,
+        poorTree,
+        folder,
+        apiList,
+        validateSingleFile,
+        counters,
+      ),
     )
   })
 }
@@ -75,9 +107,10 @@ const afterFill = async (
   partialTree: PartialTree,
   apiList: ApiList,
   validateSingleFile: (file: CompanionFile) => string | null,
-  reportProgress: (n: number) => void,
+  reportProgress: (progress: WalkProgress) => void,
 ): Promise<PartialTree> => {
   const queue = new PQueue({ concurrency: 6 })
+  const counters = { filesFound: 0, foldersWalked: 0 }
 
   // fill up the missing parts of a partialTree!
   const poorTree: PartialTree = shallowClone(partialTree)
@@ -97,18 +130,31 @@ const afterFill = async (
         poorFolder,
         apiList,
         validateSingleFile,
+        counters,
       ),
     )
   })
 
   queue.on('completed', () => {
-    const nOfFilesChecked = poorTree.filter(
-      (i) => i.type === 'file' && i.status === 'checked',
-    ).length
-    reportProgress(nOfFilesChecked)
+    reportProgress({
+      filesFound: counters.filesFound,
+      foldersWalked: counters.foldersWalked,
+      // `size` is queued, `pending` is in flight.
+      foldersRemaining: queue.size + queue.pending,
+    })
   })
 
   await queue.onIdle()
+
+  // Terminal report. The per-task `completed` events fire while sibling tasks
+  // may still be in flight, so the last of them is not guaranteed to show zero
+  // remaining — a UI driven purely by those events would stall reading
+  // "N folders left" forever. This guarantees consumers see the finished state.
+  reportProgress({
+    filesFound: counters.filesFound,
+    foldersWalked: counters.foldersWalked,
+    foldersRemaining: 0,
+  })
 
   return poorTree
 }

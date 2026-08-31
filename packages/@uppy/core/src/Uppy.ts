@@ -316,6 +316,18 @@ export interface _UppyEventMap<M extends Meta, B extends Body> {
   'file-added': (file: UppyFile<M, B>) => void
   'file-removed': (file: UppyFile<M, B>) => void
   'files-added': (files: UppyFile<M, B>[]) => void
+  /**
+   * Progress of a remote provider's recursive folder walk (see
+   * `@uppy/provider-views` afterFill). Emitted per completed folder while the
+   * user waits for a large selection to be enumerated — files are not added to
+   * Uppy until the whole walk finishes, so this is the only signal available
+   * during it. There is no percentage: the tree size is unknown until the end.
+   */
+  'provider-walk-progress': (progress: {
+    filesFound: number
+    foldersWalked: number
+    foldersRemaining: number
+  }) => void
   'info-hidden': () => void
   'info-visible': () => void
   'is-offline': () => void

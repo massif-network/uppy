@@ -634,3 +634,83 @@ describe('getBreadcrumbs()', () => {
     expect(result.map((f) => f.id)).toEqual([null])
   })
 })
+
+describe('afterFill() walk progress', () => {
+  // A provider tree N folders wide, each holding `filesPerFolder` files.
+  const wideTree = (folderCount: number): PartialTree => [
+    _root('ourRoot'),
+    ...Array.from({ length: folderCount }, (_unused, i) =>
+      // `checked` + not-yet-`cached` is what makes afterFill walk a folder.
+      _folder(`f${i}`, {
+        parentId: 'ourRoot',
+        status: 'checked',
+        cached: false,
+      }),
+    ),
+  ]
+
+  const listing = (filesPerFolder: number) => async (directory: string) => ({
+    nextPagePath: null,
+    items: Array.from({ length: filesPerFolder }, (_unused, i) => ({
+      id: `${directory}_i${i}`,
+      requestPath: `${directory}_i${i}`,
+      name: `${directory}_i${i}.jpg`,
+      isFolder: false,
+    })) as never,
+  })
+
+  it('reports a running file count and the folders still queued', async () => {
+    const progress: Array<{
+      filesFound: number
+      foldersWalked: number
+      foldersRemaining: number
+    }> = []
+
+    await afterFill(
+      wideTree(8),
+      listing(5) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    expect(progress.length).toBeGreaterThan(0)
+    const last = progress.at(-1)!
+    // 8 folders x 5 files, and the walk is finished.
+    expect(last.filesFound).toEqual(40)
+    expect(last.foldersWalked).toEqual(8)
+    expect(last.foldersRemaining).toEqual(0)
+
+    // Monotonic: a progress report never goes backwards.
+    for (let i = 1; i < progress.length; i++) {
+      expect(progress[i].filesFound).toBeGreaterThanOrEqual(
+        progress[i - 1].filesFound,
+      )
+      expect(progress[i].foldersWalked).toBeGreaterThanOrEqual(
+        progress[i - 1].foldersWalked,
+      )
+    }
+  })
+
+  // The count used to be re-derived by filtering the whole tree on every
+  // completed folder — O(tree) per event, so quadratic across a large walk.
+  // That is exactly the cost this progress reporting exists to make visible, so
+  // it must not be the thing causing it.
+  it('counts incrementally rather than rescanning the tree per folder', async () => {
+    const folderCount = 400
+    const filesPerFolder = 25 // 10,000 files
+
+    const startedAt = performance.now()
+    const tree = await afterFill(
+      wideTree(folderCount),
+      listing(filesPerFolder) as never,
+      () => null,
+      () => {},
+    )
+    const elapsed = performance.now() - startedAt
+
+    expect(
+      tree.filter((i) => i.type === 'file' && i.status === 'checked').length,
+    ).toEqual(folderCount * filesPerFolder)
+    expect(elapsed).toBeLessThan(4000)
+  })
+})
