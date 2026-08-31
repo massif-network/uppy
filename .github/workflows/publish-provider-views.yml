@@ -1,0 +1,77 @@
+name: Publish @massif-network/provider-views
+
+# Republishes the fork's @uppy/provider-views (adds the `provider-walk-progress`
+# event, so an embedding app can show progress while a large remote folder tree
+# is enumerated — see PR #44) to GitHub Packages under the @massif-network
+# scope.
+#
+# The package keeps its @uppy/ name in-repo; this workflow renames it only at
+# publish time. Bump the package's version before running to cut a release.
+#
+# IMPORTANT — publishing alone changes nothing downstream. massif-app pulls
+# @uppy/provider-views in *transitively* via @uppy/dashboard, so it also needs an
+# override in that repo's pnpm-workspace.yaml, alongside the companion-client one:
+#
+#   "@uppy/provider-views": "npm:@massif-network/provider-views@<version>"
+#
+# Manual only (workflow_dispatch), deliberately: unlike @massif-network/smugmug,
+# which is a self-contained plugin, provider-views is a fork of an upstream
+# package that several other Uppy packages depend on. Auto-publishing an rc on
+# every branch push is a wider blast radius than that warrants.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+# Never cancel an in-flight publish.
+concurrency:
+  group: publish-provider-views-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build provider-views (+ its workspace deps)
+        run: yarn workspace @uppy/provider-views build
+
+      - name: Pack, rename to @massif-network scope
+        run: |
+          set -euo pipefail
+          # yarn pack converts `workspace:` deps to concrete version ranges, so
+          # @uppy/utils and the @uppy/core peer resolve to the published upstream
+          # packages. Only provider-views itself is forked.
+          yarn workspace @uppy/provider-views pack --out /tmp/pv.tgz
+          rm -rf /tmp/pkg && mkdir -p /tmp/pkg
+          tar xzf /tmp/pv.tgz -C /tmp/pkg --strip-components=1
+          node -e '
+            const fs = require("fs");
+            const p = "/tmp/pkg/package.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            j.name = "@massif-network/provider-views";
+            j.repository = { type: "git", url: "git+https://github.com/massif-network/uppy.git" };
+            j.publishConfig = { registry: "https://npm.pkg.github.com" };
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+            console.log("publishing", j.name + "@" + j.version);
+          '
+          printf '@massif-network:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n' > /tmp/pkg/.npmrc
+
+      - name: Publish to GitHub Packages
+        working-directory: /tmp/pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish
