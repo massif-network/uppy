@@ -750,26 +750,45 @@ describe('afterFill() walk progress', () => {
     expect(progress.at(-1)!.filesFound).toEqual(5)
   })
 
-  // The count used to be re-derived by filtering the whole tree on every
-  // completed folder — O(tree) per event, so quadratic across a large walk.
-  // That is exactly the cost this progress reporting exists to make visible, so
-  // it must not be the thing causing it.
-  it('counts incrementally rather than rescanning the tree per folder', async () => {
-    const folderCount = 400
-    const filesPerFolder = 25 // 10,000 files
+  // p-queue emits `completed` BEFORE decrementing `pending`, so the folder whose
+  // completion triggered the callback is still counted in `queue.pending`.
+  // Without excluding it, every event overstates the work left by one and the
+  // final per-task event can never reach zero — a UI would sit on "1 to go".
+  it('does not count the just-completed folder as remaining', async () => {
+    const folderCount = 5
+    const progress: Array<{ foldersWalked: number; foldersRemaining: number }> =
+      []
 
-    const startedAt = performance.now()
-    const tree = await afterFill(
-      wideTree(folderCount),
-      listing(filesPerFolder) as never,
+    await afterFill(
+      [
+        _root('ourRoot'),
+        ...Array.from({ length: folderCount }, (_unused, i) =>
+          _folder(`f${i}`, {
+            parentId: 'ourRoot',
+            status: 'checked',
+            cached: false,
+          }),
+        ),
+      ],
+      (async () => ({ nextPagePath: null, items: [] })) as never,
       () => null,
-      () => {},
+      (p) => progress.push(p),
     )
-    const elapsed = performance.now() - startedAt
 
-    expect(
-      tree.filter((i) => i.type === 'file' && i.status === 'checked').length,
-    ).toEqual(folderCount * filesPerFolder)
-    expect(elapsed).toBeLessThan(4000)
+    // These folders have no children, so nothing is ever added to the queue
+    // beyond the initial 5: walked + remaining must account for all of them on
+    // every single event.
+    for (const p of progress) {
+      expect(p.foldersWalked + p.foldersRemaining).toEqual(folderCount)
+    }
+    expect(progress.at(-1)!.foldersRemaining).toEqual(0)
   })
+
+  // NOTE: there is deliberately no perf test for the incremental counting.
+  // A wall-clock assertion here does not work: at test-sized trees the old
+  // per-event full rescan completes in milliseconds, so the guard passed
+  // against the very implementation it was meant to reject, and at larger sizes
+  // it would be flaky on a loaded runner. The two implementations produce
+  // IDENTICAL output, so there is nothing deterministic left to assert — the
+  // complexity is documented at the counter instead.
 })

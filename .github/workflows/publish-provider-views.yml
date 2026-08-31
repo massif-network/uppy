@@ -49,6 +49,13 @@ jobs:
       - name: Build provider-views (+ its workspace deps)
         run: yarn workspace @uppy/provider-views build
 
+      # The package's `exports` map points at dist/style.css and
+      # dist/style.min.css, and `files` ships dist/. `build` only runs tsc, so
+      # without this the tarball would advertise CSS entry points that are not
+      # in it and any consumer importing them would fail to resolve.
+      - name: Build provider-views CSS
+        run: yarn workspace @uppy/provider-views build:css
+
       - name: Pack, rename to @massif-network scope
         run: |
           set -euo pipefail

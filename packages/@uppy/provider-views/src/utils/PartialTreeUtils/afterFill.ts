@@ -37,7 +37,11 @@ const recursivelyFetch = async (
   poorFolder: PartialTreeFolderNode,
   apiList: ApiList,
   validateSingleFile: (file: CompanionFile) => string | null,
-  counters: { filesFound: number; foldersWalked: number },
+  counters: {
+    filesFound: number
+    foldersWalked: number
+    foldersQueued: number
+  },
 ) => {
   let items: CompanionFile[] = []
   let currentPath: PartialTreeId = poorFolder.cached
@@ -90,6 +94,7 @@ const recursivelyFetch = async (
   }
 
   folders.forEach(async (folder) => {
+    counters.foldersQueued += 1
     queue.add(() =>
       recursivelyFetch(
         queue,
@@ -124,6 +129,7 @@ const afterFill = async (
       (item) => item.type === 'file' && item.status === 'checked',
     ).length,
     foldersWalked: 0,
+    foldersQueued: 0,
   }
   const poorFolders = poorTree.filter(
     (item) =>
@@ -133,6 +139,7 @@ const afterFill = async (
       (item.cached === false || item.nextPagePath),
   ) as PartialTreeFolderNode[]
   // per each poor folder, recursively fetch all files and make them .checked!
+  counters.foldersQueued += poorFolders.length
   poorFolders.forEach((poorFolder) => {
     queue.add(() =>
       recursivelyFetch(
@@ -150,8 +157,11 @@ const afterFill = async (
     reportProgress({
       filesFound: counters.filesFound,
       foldersWalked: counters.foldersWalked,
-      // `size` is queued, `pending` is in flight.
-      foldersRemaining: queue.size + queue.pending,
+      // Tracked by us, NOT read off the queue. p-queue emits `completed` before
+      // decrementing `pending`, and `pending` can stay flat across several
+      // events, so `queue.size + queue.pending` overstates the work left by a
+      // varying amount. Queued-minus-walked is exact by construction.
+      foldersRemaining: counters.foldersQueued - counters.foldersWalked,
     })
   })
 
