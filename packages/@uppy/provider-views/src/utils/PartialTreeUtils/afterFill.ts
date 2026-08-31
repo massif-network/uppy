@@ -167,14 +167,20 @@ const afterFill = async (
 
   await queue.onIdle()
 
-  // Terminal report. The per-task `completed` events fire while sibling tasks
-  // may still be in flight, so the last of them is not guaranteed to show zero
-  // remaining — a UI driven purely by those events would stall reading
-  // "N folders left" forever. This guarantees consumers see the finished state.
+  // Terminal report, so a consumer always sees a final state even if the last
+  // per-task event did not land on one.
+  //
+  // NOT hardcoded to zero. `queue.onIdle()` resolves once every task has
+  // SETTLED, including rejected ones, and the promises from `queue.add()` are
+  // discarded — so a folder whose listing failed or was aborted leaves
+  // `foldersWalked < foldersQueued` and `afterFill` still returns a partial
+  // tree (pre-existing behaviour, not introduced here). Announcing 0 remaining
+  // in that case would tell the UI the walk finished cleanly when files are
+  // missing. Reporting the real figure makes an incomplete walk visible.
   reportProgress({
     filesFound: counters.filesFound,
     foldersWalked: counters.foldersWalked,
-    foldersRemaining: 0,
+    foldersRemaining: counters.foldersQueued - counters.foldersWalked,
   })
 
   return poorTree

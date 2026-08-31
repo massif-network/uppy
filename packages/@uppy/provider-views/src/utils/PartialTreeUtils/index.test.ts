@@ -784,6 +784,47 @@ describe('afterFill() walk progress', () => {
     expect(progress.at(-1)!.foldersRemaining).toEqual(0)
   })
 
+  // `queue.onIdle()` resolves once every task has SETTLED, rejections included,
+  // and afterFill returns the partial tree regardless. The terminal report must
+  // therefore not claim zero remaining, or a failed/aborted walk looks identical
+  // to a clean one while files are silently missing.
+  it('does not report zero remaining when a folder listing failed', async () => {
+    const progress: Array<{ foldersWalked: number; foldersRemaining: number }> =
+      []
+
+    await afterFill(
+      [
+        _root('ourRoot'),
+        _folder('ok', {
+          parentId: 'ourRoot',
+          status: 'checked',
+          cached: false,
+        }),
+        _folder('boom', {
+          parentId: 'ourRoot',
+          status: 'checked',
+          cached: false,
+        }),
+      ],
+      (async (directory: string) => {
+        if (directory === 'boom') throw new Error('network down')
+        return {
+          nextPagePath: null,
+          items: [
+            { id: 'f', requestPath: 'f', name: 'a.jpg', isFolder: false },
+          ],
+        }
+      }) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    const terminal = progress.at(-1)!
+    expect(terminal.foldersWalked).toEqual(1)
+    // 2 queued, 1 walked — the failed folder must still show as outstanding.
+    expect(terminal.foldersRemaining).toEqual(1)
+  })
+
   // NOTE: there is deliberately no perf test for the incremental counting.
   // A wall-clock assertion here does not work: at test-sized trees the old
   // per-event full rescan completes in milliseconds, so the guard passed
