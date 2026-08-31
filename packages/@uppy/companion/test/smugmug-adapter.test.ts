@@ -9,6 +9,10 @@ import {
   type SmugMugAlbumImagesResponse,
   type SmugMugNodeChildrenResponse,
 } from '../src/server/provider/smugmug/adapter.js'
+import {
+  albumListParams,
+  nodeListParams,
+} from '../src/server/provider/smugmug/index.js'
 
 // Regression coverage for album/folder pagination: the client pages by feeding
 // `nextPagePath` straight back in as the next `directory`, so the directory MUST
@@ -279,5 +283,43 @@ describe('album description', () => {
     )
 
     expect(items[0]?.albumDescription).toBeUndefined()
+  })
+})
+
+// Regression coverage for the list-request pagination parameters.
+//
+// The original bug was a wrong parameter NAME, not a wrong value: the provider
+// sent `_count`, which SmugMug does not recognise. It does not error — it
+// silently ignores the parameter and applies the endpoint default (10 for
+// node!children), so every large import degraded into thousands of sequential
+// round trips with nothing in the logs to show for it.
+//
+// Values verified against the live SmugMug API:
+//   node!children  no param -> 10   count=500 -> RequestedCount clamps to 200
+//   album!images   no param -> 100  count=1000 -> returned all 669 of an album
+describe('SmugMug list pagination params', () => {
+  test('paginates with `count`, never the underscore-prefixed form', () => {
+    for (const params of [nodeListParams(), albumListParams()]) {
+      const keys = Object.keys(params)
+      expect(keys).toContain('count')
+      expect(keys).not.toContain('_count')
+    }
+  })
+
+  test("node listing stays within SmugMug's 200 clamp", () => {
+    expect(nodeListParams().count).toBeGreaterThan(10) // the ignored-param default
+    expect(nodeListParams().count).toBeLessThanOrEqual(200)
+  })
+
+  test('album listing beats the 100 default and needs no clamp', () => {
+    // album!images imposes no observed ceiling, so this only has to beat the
+    // default we were accidentally relying on.
+    expect(albumListParams().count).toBeGreaterThan(100)
+  })
+
+  test('album listing still requests the Album expansion', () => {
+    // `_expand` rides along on the same request so the album description costs
+    // no extra round trip; losing it would silently drop descriptions.
+    expect(albumListParams()._expand).toBe('Album')
   })
 })
