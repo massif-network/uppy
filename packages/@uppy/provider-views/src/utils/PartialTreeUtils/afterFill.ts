@@ -19,8 +19,15 @@ export type ApiList = (directory: PartialTreeId) => Promise<{
  * Progress of a recursive provider folder walk.
  *
  * There is deliberately no percentage: the tree's size is unknown until the walk
- * finishes, so the only honest figures are how much has been found so far and how
- * many folders are still queued. `foldersRemaining` reaching 0 is the end.
+ * finishes, so the only honest figures are how much has been found so far and
+ * how many folders are still queued.
+ *
+ * **This is progress, not lifecycle — do not use it to detect completion.**
+ * `foldersRemaining` reaching 0 is not a reliable end signal: a walk in which a
+ * folder listing failed or was aborted finishes with a non-zero value (see the
+ * terminal report in `afterFill`), which is the honest answer but means a
+ * consumer waiting for 0 would wait forever. Completion is `afterFill`
+ * resolving, and for an embedder, Uppy's own `files-added`.
  */
 export type WalkProgress = {
   /** Files discovered and selected so far. */
