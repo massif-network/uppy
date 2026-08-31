@@ -691,6 +691,65 @@ describe('afterFill() walk progress', () => {
     }
   })
 
+  // Regression: the incremental counter must be SEEDED from files already
+  // checked in the partial tree. A user who opened a folder earlier has checked
+  // files in `cached` folders that this walk never revisits, so starting from
+  // zero under-reports the real selection in every event — including the final
+  // one, which is what a UI settles on.
+  it('counts files already checked before the walk started', async () => {
+    // prettier-ignore
+    const tree: PartialTree = [
+      _root('ourRoot'),
+      // Already fetched last time round, so afterFill will not walk it.
+      _folder('cachedOne', {
+        parentId: 'ourRoot',
+        status: 'checked',
+        cached: true,
+      }),
+      _file('cachedOne_a', { parentId: 'cachedOne', status: 'checked' }),
+      _file('cachedOne_b', { parentId: 'cachedOne', status: 'checked' }),
+      // Still to walk.
+      _folder('fresh', {
+        parentId: 'ourRoot',
+        status: 'checked',
+        cached: false,
+      }),
+    ]
+
+    const progress: Array<{ filesFound: number }> = []
+    await afterFill(
+      tree,
+      (async () => ({
+        nextPagePath: null,
+        items: [
+          {
+            id: 'fresh_1',
+            requestPath: 'fresh_1',
+            name: 'a.jpg',
+            isFolder: false,
+          },
+          {
+            id: 'fresh_2',
+            requestPath: 'fresh_2',
+            name: 'b.jpg',
+            isFolder: false,
+          },
+          {
+            id: 'fresh_3',
+            requestPath: 'fresh_3',
+            name: 'c.jpg',
+            isFolder: false,
+          },
+        ],
+      })) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    // 2 already checked + 3 newly fetched. Counting only the new ones gives 3.
+    expect(progress.at(-1)!.filesFound).toEqual(5)
+  })
+
   // The count used to be re-derived by filtering the whole tree on every
   // completed folder — O(tree) per event, so quadratic across a large walk.
   // That is exactly the cost this progress reporting exists to make visible, so

@@ -110,10 +110,21 @@ const afterFill = async (
   reportProgress: (progress: WalkProgress) => void,
 ): Promise<PartialTree> => {
   const queue = new PQueue({ concurrency: 6 })
-  const counters = { filesFound: 0, foldersWalked: 0 }
 
   // fill up the missing parts of a partialTree!
   const poorTree: PartialTree = shallowClone(partialTree)
+
+  // Seeded from what is ALREADY checked, then incremented as new files arrive.
+  // A partial tree can carry checked files from folders the user opened earlier
+  // (they are `cached`, so this walk never revisits them). Starting from zero
+  // would under-report the real selection in every event, including the final
+  // one. Counted once here — the per-event cost stays O(1), which is the point.
+  const counters = {
+    filesFound: poorTree.filter(
+      (item) => item.type === 'file' && item.status === 'checked',
+    ).length,
+    foldersWalked: 0,
+  }
   const poorFolders = poorTree.filter(
     (item) =>
       item.type === 'folder' &&
