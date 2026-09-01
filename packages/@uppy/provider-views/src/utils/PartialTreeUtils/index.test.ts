@@ -1005,3 +1005,27 @@ describe('afterFill() streaming', () => {
     expect(batches[0].folders[0].fileCount).toEqual(1)
   })
 })
+
+describe('getCheckedFilesWithPaths() scratch reuse', () => {
+  const treeUnder = (folderName: string): PartialTree => [
+    _root('ourRoot'),
+    {
+      ..._folder('shared', { parentId: 'ourRoot', status: 'checked' }),
+      data: { ..._cFolder('shared'), name: folderName },
+    },
+    _file('leaf', { parentId: 'shared', status: 'checked' }),
+  ]
+
+  it('does not answer for one tree out of another one\u2019s cache', () => {
+    const scratch = createPathScratch()
+
+    const first = getCheckedFilesWithPaths(treeUnder('Trips'), { scratch })
+    expect(first[0].relDirPath).toEqual('Trips/name_leaf.jpg')
+
+    // Same node ids, different parent names — a second tree reusing the scratch
+    // would otherwise be answered out of the first one's cached chains, which
+    // is a WRONG path rather than a merely stale one.
+    const second = getCheckedFilesWithPaths(treeUnder('Archive'), { scratch })
+    expect(second[0].relDirPath).toEqual('Archive/name_leaf.jpg')
+  })
+})

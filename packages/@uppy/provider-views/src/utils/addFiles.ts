@@ -20,7 +20,12 @@ export type AddFilesOptions = {
    * caller when the walk finishes.
    */
   quiet?: boolean
-  /** Receives the ids Uppy will have assigned to the files that were added. */
+  /**
+   * Receives the ids Uppy ACTUALLY took, read back from its state after the
+   * add. Not the ids we offered: `uppy.addFiles` drops a file that fails a
+   * restriction without throwing, so the two differ exactly when a caller most
+   * needs to know — a count to report, or a set of ids to remove again.
+   */
   onAdded?: (uppyFileIds: string[]) => void
 }
 
@@ -37,14 +42,20 @@ const addFiles = <M extends Meta, B extends Body>(
   const filesToAdd: UppyFileNonGhost<M, B>[] = []
   const filesAlreadyAdded: UppyFileNonGhost<M, B>[] = []
   const idsToAdd: string[] = []
+  // Ids claimed by THIS batch. `checkIfFileAlreadyExists` only knows what is
+  // already on the instance, so without this a batch holding the same file
+  // twice — a provider repeating an item across a page boundary, say — hands
+  // Uppy two entries for one key and then reports two as added.
+  const claimed = new Set<string>()
   uppyFiles.forEach((file) => {
     const id = getSafeFileId(file, plugin.uppy.getID())
-    if (plugin.uppy.checkIfFileAlreadyExists(id)) {
+    if (claimed.has(id) || plugin.uppy.checkIfFileAlreadyExists(id)) {
       filesAlreadyAdded.push(file)
-    } else {
-      filesToAdd.push(file)
-      idsToAdd.push(id)
+      return
     }
+    claimed.add(id)
+    filesToAdd.push(file)
+    idsToAdd.push(id)
   })
 
   if (!options.quiet) {
@@ -60,9 +71,10 @@ const addFiles = <M extends Meta, B extends Body>(
     }
   }
   plugin.uppy.addFiles(filesToAdd)
-  // After the add, so a consumer that reacts to these ids can already find the
-  // files on the Uppy instance.
-  if (idsToAdd.length > 0) options.onAdded?.(idsToAdd)
+  // Read back after the add, so a consumer reacting to these ids can find every
+  // one of them on the instance — and so a restriction failure narrows the list
+  // instead of silently inflating it.
+  options.onAdded?.(idsToAdd.filter((id) => plugin.uppy.getFile(id) != null))
 }
 
 export default addFiles

@@ -592,7 +592,22 @@ export default class ProviderView<M extends Meta, B extends Body> {
     // would be left reviewing a selection the user never completed.
     const discardStreamedFiles = () => {
       if (streamedUppyIds.length > 0) {
-        this.plugin.uppy.removeFiles(streamedUppyIds)
+        try {
+          this.plugin.uppy.removeFiles(streamedUppyIds)
+        } catch (err) {
+          // `removeFiles` throws when the removal would partly empty an upload
+          // already running under an uploader without `individualCancellation`
+          // — reachable for a host with `autoProceed`, since streaming starts
+          // uploads mid-walk. This runs on the cancellation and
+          // restriction-failure paths, so throwing would replace a clean abort
+          // with an exception AND still leave the files behind. The host is
+          // told `aborted` either way, which is the part that matters: its
+          // derived state goes.
+          this.plugin.uppy.log(
+            `Could not discard streamed files after an aborted walk: ${err}`,
+            'warning',
+          )
+        }
         streamedUppyIds.length = 0
       }
       streamedIds.clear()
@@ -644,6 +659,7 @@ export default class ProviderView<M extends Meta, B extends Body> {
                 )[Symbol.for('uppy test: walkFlushClock')],
                 onBatch: ({ files, folders }) => {
                   for (const file of files) streamedIds.add(file.requestPath)
+                  let addedNow = 0
                   addFiles(files, this.plugin, this.provider, {
                     // One notice for the whole selection, emitted at the end —
                     // not one per instalment.
@@ -651,10 +667,15 @@ export default class ProviderView<M extends Meta, B extends Body> {
                     onAdded: (ids) => {
                       // Appended, not spread — see the same note in `afterFill`.
                       for (const id of ids) streamedUppyIds.push(id)
+                      addedNow = ids.length
                     },
                   })
-                  streamedCount += files.length
-                  this.#emitWalkBatch('streaming', folders, files.length)
+                  // What Uppy TOOK, not what the walk offered: `addFiles` skips
+                  // a file that already exists or fails a restriction, and both
+                  // the toast and `provider-walk-batch.fileCount` claim to
+                  // count files that are on the instance.
+                  streamedCount += addedNow
+                  this.#emitWalkBatch('streaming', folders, addedNow)
                 },
               }
             : undefined,
@@ -700,19 +721,23 @@ export default class ProviderView<M extends Meta, B extends Body> {
           exclude: streaming ? streamedIds : undefined,
           scratch,
         })
+        let addedFinally = 0
         if (companionFiles.length > 0 || !streaming) {
           addFiles(companionFiles, this.plugin, this.provider, {
             quiet: streaming,
+            onAdded: (ids) => {
+              addedFinally = ids.length
+            },
           })
         }
         if (streaming) {
-          const total = streamedCount + companionFiles.length
+          const total = streamedCount + addedFinally
           if (total > 0) {
             this.plugin.uppy.info(
               this.plugin.uppy.i18n('addedNumFiles', { numFiles: total }),
             )
           }
-          this.#emitWalkBatch('complete', [], companionFiles.length)
+          this.#emitWalkBatch('complete', [], addedFinally)
         }
 
         // 5. Reset state

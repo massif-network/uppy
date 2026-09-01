@@ -29,6 +29,7 @@ type TreeNode = PartialTreeFile | PartialTreeFolderNode
  * flush (which would reintroduce the very cost this removes).
  */
 export type PathScratch = {
+  /** Reassigned wholesale when the scratch is pointed at a different tree. */
   cache: Cache
   index: Map<PartialTreeId, TreeNode>
   /** The array `indexedUpTo` counts against; a different array restarts it. */
@@ -45,7 +46,16 @@ export const createPathScratch = (): PathScratch => ({
 })
 
 const indexTree = (partialTree: PartialTree, scratch: PathScratch): void => {
-  const start = scratch.source === partialTree ? scratch.indexedUpTo : 0
+  const sameTree = scratch.source === partialTree
+  if (!sameTree && scratch.source !== null) {
+    // A different tree can reuse a node id with a different parent, so a cached
+    // chain from the previous one would be a wrong answer rather than a stale
+    // one. Cleared rather than merged — and it also stops a long-lived scratch
+    // retaining every node of every tree it has ever seen.
+    scratch.cache = Object.create(null)
+    scratch.index.clear()
+  }
+  const start = sameTree ? scratch.indexedUpTo : 0
   for (let i = start; i < partialTree.length; i++) {
     const item = partialTree[i]
     // A root has no ancestors and is never part of a path.

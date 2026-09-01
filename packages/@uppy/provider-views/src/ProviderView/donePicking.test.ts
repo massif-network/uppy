@@ -189,4 +189,64 @@ describe('donePicking() streaming', () => {
     expect(batches).toEqual([])
     expect(uppy.getFiles()).toHaveLength(3)
   })
+
+  it('still reports aborted when the files cannot be taken back', async () => {
+    const { uppy, view } = setup({ stream: true })
+    const statuses: string[] = []
+    uppy.on('provider-walk-batch', (batch) => statuses.push(batch.status))
+
+    // `Uppy.removeFiles` throws when the removal would partly empty an upload
+    // already running under an uploader without `individualCancellation`.
+    uppy.removeFiles = () => {
+      throw new Error(
+        'The installed uploader plugin does not allow removing files during an upload.',
+      )
+    }
+    uppy.on('file-added', () => {
+      uppy.emit('cancel-all')
+    })
+
+    // The host has already built a plan on the streamed files, so what it needs
+    // is to be TOLD the selection is void. Letting the failed cleanup throw
+    // would swallow that and leave the plan standing.
+    await expect(view.donePicking()).resolves.toBeUndefined()
+    expect(statuses.at(-1)).toEqual('aborted')
+  })
+
+  it('counts what Uppy took, not what the walk offered', async () => {
+    // A provider repeating an item across a page boundary — the pages are
+    // drained into ONE listing, so the folder offers the same file twice and
+    // Uppy keeps one. (Its id is name + type + relativePath + size, so two
+    // items only collide when they are genuinely the same file.)
+    const paged = (path: string | null) => {
+      if (path === 'top') {
+        return { nextPagePath: 'top-page-2', items: [cFile('a')] }
+      }
+      if (path === 'top-page-2') {
+        return { nextPagePath: null, items: [cFile('a')] }
+      }
+      return null
+    }
+
+    const { uppy, view, provider } = setup({ stream: true })
+    const counts: number[] = []
+    uppy.on('provider-walk-batch', (batch) => counts.push(batch.fileCount))
+    provider.list.mockImplementation(
+      (path: string | null) =>
+        new Promise((resolve, reject) => {
+          setTimeout(() => {
+            const found = paged(path)
+            if (found) resolve(found)
+            else reject(new Error(`unexpected list: ${path}`))
+          }, 0)
+        }),
+    )
+
+    await view.donePicking()
+
+    // Reporting the offered count would tell the host two files arrived in a
+    // folder that produced one, and inflate the "Added N files" notice.
+    expect(uppy.getFiles()).toHaveLength(1)
+    expect(counts.reduce((total, n) => total + n, 0)).toEqual(1)
+  })
 })
