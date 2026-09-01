@@ -208,6 +208,20 @@ describe('donePicking() streaming', () => {
     expect(statuses.at(-1)).toBe('complete')
   })
 
+  it('stops listening for the panel close once torn down', async () => {
+    const { uppy, view, plugin } = setup({ stream: true })
+    plugin.setPluginState({ didFirstRender: true })
+
+    // Provider plugins call this on uninstall. The listener is registered in
+    // the constructor, so without an explicit `off` an uninstalled view keeps
+    // resetting plugin state — and a reinstall stacks another one on top.
+    view.tearDown()
+    // @ts-expect-error Dashboard's event, not declared by core.
+    uppy.emit('dashboard:close-panel', 'TestProvider')
+
+    expect(plugin.getPluginState().didFirstRender).toBe(true)
+  })
+
   it('is not cancelled by the panel closing behind its own first instalment', async () => {
     const { uppy, view } = setup({ stream: true })
 

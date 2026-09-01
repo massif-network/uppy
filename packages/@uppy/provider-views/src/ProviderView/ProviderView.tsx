@@ -200,8 +200,16 @@ export default class ProviderView<M extends Meta, B extends Body> {
     this.plugin.setPluginState(getDefaultState(this.plugin.rootFolderId))
   }
 
+  /**
+   * Provider plugins call this on uninstall. The `dashboard:close-panel`
+   * listener is registered in the constructor and was never removed, so an
+   * uninstalled view stayed subscribed — keeping itself and its plugin
+   * reachable, still resetting plugin state on a panel close, and stacking up
+   * another listener on every reinstall.
+   */
   tearDown(): void {
-    // Nothing.
+    // @ts-expect-error this should be typed in @uppy/dashboard.
+    this.plugin.uppy.off('dashboard:close-panel', this.#handlePanelClose)
   }
 
   setLoading(loading: boolean | string): void {
