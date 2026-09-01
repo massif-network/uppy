@@ -178,7 +178,7 @@ export default class ProviderView<M extends Meta, B extends Body> {
 
     // todo
     // @ts-expect-error this should be typed in @uppy/dashboard.
-    this.plugin.uppy.on('dashboard:close-panel', this.resetPluginState)
+    this.plugin.uppy.on('dashboard:close-panel', this.#handlePanelClose)
 
     this.plugin.uppy.registerRequestClient(
       this.provider.provider,
@@ -200,8 +200,16 @@ export default class ProviderView<M extends Meta, B extends Body> {
     this.plugin.setPluginState(getDefaultState(this.plugin.rootFolderId))
   }
 
+  /**
+   * Provider plugins call this on uninstall. The `dashboard:close-panel`
+   * listener is registered in the constructor and was never removed, so an
+   * uninstalled view stayed subscribed — keeping itself and its plugin
+   * reachable, still resetting plugin state on a panel close, and stacking up
+   * another listener on every reinstall.
+   */
   tearDown(): void {
-    // Nothing.
+    // @ts-expect-error this should be typed in @uppy/dashboard.
+    this.plugin.uppy.off('dashboard:close-panel', this.#handlePanelClose)
   }
 
   setLoading(loading: boolean | string): void {
@@ -227,6 +235,32 @@ export default class ProviderView<M extends Meta, B extends Body> {
   }
 
   #abortController: AbortController | undefined
+
+  /**
+   * True while a STREAMING `donePicking` is walking.
+   *
+   * Streaming hands files to Uppy mid-walk, and Dashboard answers `file-added`
+   * by hiding its panels, which emits `dashboard:close-panel`. Two listeners
+   * react to that event and both would end the walk that caused it:
+   * `#withAbort`'s `cancelRequest` (handled by its `ignorePanelClose`), and the
+   * `resetPluginState` registered in the constructor — which blanks
+   * `didFirstRender`, so the next `render` bootstraps `openFolder`, whose own
+   * `#withAbort` aborts the walk's controller.
+   *
+   * The one-shot flow never sees either: it adds files only once the walk is
+   * over.
+   */
+  #streamingWalk = false
+
+  /**
+   * The panel closing means "the user navigated away, drop the browsing state".
+   * During a streaming walk it means the opposite: the panel closed BECAUSE the
+   * walk is delivering, and the state it would drop is the walk's own.
+   */
+  #handlePanelClose = (): void => {
+    if (this.#streamingWalk) return
+    this.resetPluginState()
+  }
 
   /**
    * @param op the abortable work
@@ -583,7 +617,20 @@ export default class ProviderView<M extends Meta, B extends Body> {
     if (this.isLoading) return
     this.setLoading(true)
 
-    const streaming = this.opts.streamWalkedFiles === true
+    // Read from the PLUGIN's opts as well as the view's. Every provider plugin
+    // (@uppy/dropbox, @uppy/google-drive, @uppy/onedrive, @uppy/smugmug, …)
+    // constructs its `ProviderView` with a fixed set of options — `provider`,
+    // `viewType`, `showTitles`, and so on — and drops everything else, so an
+    // option added here never reaches the view by the route an embedder would
+    // expect: passing it to `uppy.use(SmugMug, { … })`. Forking four more
+    // packages to widen that list is not worth it for one flag.
+    const streaming =
+      (this.opts.streamWalkedFiles ??
+        (this.plugin.opts as { streamWalkedFiles?: boolean })
+          .streamWalkedFiles) === true
+    // Held for the whole walk, so the panel-close reset stays disarmed even
+    // across the awaits inside it.
+    this.#streamingWalk = streaming
     // Shared with the final `getCheckedFilesWithPaths` below so the paths the
     // walk already derived are not derived a second time.
     const scratch = createPathScratch()
@@ -780,6 +827,7 @@ export default class ProviderView<M extends Meta, B extends Body> {
       if (streaming) this.#emitWalkBatch('aborted', [], 0)
       return handleError(this.plugin.uppy)(err)
     })
+    this.#streamingWalk = false
     this.setLoading(false)
   }
 

@@ -54,7 +54,21 @@ const list = (path: string | null, options?: { signal?: AbortSignal }) =>
     },
   )
 
-const setup = ({ stream }: { stream: boolean }) => {
+/**
+ * @param stream deliver `streamWalkedFiles` the way a caller CAN'T in practice —
+ * straight to the view.
+ * @param streamViaPlugin deliver it the way an embedder actually does: to the
+ * plugin, via `uppy.use(SmugMug, { … })`. Every provider plugin builds its
+ * `ProviderView` from a fixed option list and drops the rest, so this is the
+ * only route that exists outside a unit test.
+ */
+const setup = ({
+  stream,
+  streamViaPlugin = false,
+}: {
+  stream: boolean
+  streamViaPlugin?: boolean
+}) => {
   const uppy = new Uppy({ autoProceed: false })
   const provider = {
     provider: 'test',
@@ -74,14 +88,19 @@ const setup = ({ stream }: { stream: boolean }) => {
     setPluginState: (patch: Record<string, unknown>) => {
       state = { ...state, ...patch }
     },
-    opts: { companionUrl: 'https://companion.test' },
+    opts: {
+      companionUrl: 'https://companion.test',
+      ...(streamViaPlugin ? { streamWalkedFiles: true } : {}),
+    },
   }
 
   let state: Record<string, unknown> = {}
 
   const view = new ProviderView(plugin as never, {
     provider: provider as never,
-    streamWalkedFiles: stream,
+    // Set only when true. An explicit `false` is not nullish, so it would
+    // suppress the plugin-opts fallback — and no real caller passes one.
+    ...(stream ? { streamWalkedFiles: true } : {}),
   })
   // `resetPluginState()` in the constructor seeded the default tree; replace it
   // with one checked, uncached folder so `afterFill` has something to walk.
@@ -105,7 +124,7 @@ const setup = ({ stream }: { stream: boolean }) => {
   }
   seed()
 
-  return { uppy, view, provider, seed }
+  return { uppy, view, provider, plugin, seed }
 }
 
 describe('donePicking() streaming', () => {
@@ -143,6 +162,64 @@ describe('donePicking() streaming', () => {
     // user is told nothing at all about a selection that added nothing.
     expect(notices).toEqual(['Not adding 3 duplicate files'])
     expect(uppy.getFiles()).toHaveLength(3)
+  })
+
+  it('streams when the option was given to the PLUGIN, not the view', async () => {
+    // The route every embedder uses — `uppy.use(SmugMug, { streamWalkedFiles })`
+    // — and the one no other test covers: the plugin passes a fixed option list
+    // to `new ProviderView`, so the flag is dropped before the view ever sees
+    // it, and the walk silently falls back to the one-shot path.
+    const { uppy, view } = setup({ stream: false, streamViaPlugin: true })
+    const statuses: string[] = []
+    uppy.on('provider-walk-batch', (batch) => statuses.push(batch.status))
+
+    await view.donePicking()
+
+    expect(statuses[0]).toBe('started')
+    expect(statuses).toContain('streaming')
+    expect(statuses.at(-1)).toBe('complete')
+  })
+
+  it('does not let the panel close reset the state under a running walk', async () => {
+    const { uppy, view, plugin } = setup({ stream: true })
+    // Dashboard hides its panels on `file-added`, which emits this. The abort
+    // wiring already ignores it; the constructor's `resetPluginState` listener
+    // did not — and it blanks `didFirstRender`, so the next `render` bootstraps
+    // `openFolder`, whose own abort controller kills the walk.
+    const survivedClose: unknown[] = []
+    uppy.on('file-added', () => {
+      plugin.setPluginState({ didFirstRender: true })
+      // @ts-expect-error Dashboard's event, not declared by core.
+      uppy.emit('dashboard:close-panel', 'TestProvider')
+      // Sampled HERE, not after `donePicking`: the reset at the end of a
+      // finished walk is legitimate and would mask this one.
+      survivedClose.push(plugin.getPluginState().didFirstRender)
+    })
+
+    const statuses: string[] = []
+    uppy.on('provider-walk-batch', (batch) => statuses.push(batch.status))
+
+    await view.donePicking()
+
+    // A false `didFirstRender` is the whole mechanism: nothing aborts at this
+    // point, the NEXT render does — which is why no unit test caught it.
+    expect(survivedClose.length).toBeGreaterThan(0)
+    expect(survivedClose.every((v) => v === true)).toBe(true)
+    expect(statuses.at(-1)).toBe('complete')
+  })
+
+  it('stops listening for the panel close once torn down', async () => {
+    const { uppy, view, plugin } = setup({ stream: true })
+    plugin.setPluginState({ didFirstRender: true })
+
+    // Provider plugins call this on uninstall. The listener is registered in
+    // the constructor, so without an explicit `off` an uninstalled view keeps
+    // resetting plugin state — and a reinstall stacks another one on top.
+    view.tearDown()
+    // @ts-expect-error Dashboard's event, not declared by core.
+    uppy.emit('dashboard:close-panel', 'TestProvider')
+
+    expect(plugin.getPluginState().didFirstRender).toBe(true)
   })
 
   it('is not cancelled by the panel closing behind its own first instalment', async () => {
