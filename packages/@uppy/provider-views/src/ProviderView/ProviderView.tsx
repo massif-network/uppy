@@ -527,7 +527,7 @@ export default class ProviderView<M extends Meta, B extends Body> {
    * empty, and `addFiles([])` still emits it.
    */
   #emitWalkBatch(
-    status: 'streaming' | 'complete' | 'aborted',
+    status: 'started' | 'streaming' | 'complete' | 'aborted',
     folders: WalkFolder[],
     fileCount: number,
   ): void {
@@ -568,6 +568,12 @@ export default class ProviderView<M extends Meta, B extends Body> {
       streamedIds.clear()
       streamedCount = 0
     }
+
+    // Announced before the first listing, so a host can open its own review UI
+    // on an empty selection and fill it in. Without it the host would first
+    // hear about the walk from `files-added` — by which point it has already
+    // had to decide, blind, whether this is a streaming walk or a one-shot one.
+    if (streaming) this.#emitWalkBatch('started', [], 0)
 
     await this.#withAbort(async (signal) => {
       // 1. Enrich our partialTree by fetching all 'checked' but not-yet-fetched folders

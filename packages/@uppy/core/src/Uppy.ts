@@ -354,12 +354,15 @@ export interface _UppyEventMap<M extends Meta, B extends Body> {
     /** Which provider plugin emitted this — see `provider-walk-progress`. */
     providerId: string
     /**
-     * `streaming` — more to come. `complete` — every file is now in Uppy.
-     * `aborted` — cancelled, a listing failed, or the whole selection breached
-     * an aggregate restriction; everything the walk streamed has been removed
-     * again, so a host holding derived state must discard it.
+     * `started` — announced before the first listing, carrying nothing, so a
+     * host can open its review UI on an empty selection rather than having to
+     * guess from `files-added` whether this walk streams at all. `streaming` —
+     * more to come. `complete` — every file is now in Uppy. `aborted` —
+     * cancelled, a listing failed, or the whole selection breached an aggregate
+     * restriction; everything the walk streamed has been removed again, so a
+     * host holding derived state must discard it.
      */
-    status: 'streaming' | 'complete' | 'aborted'
+    status: 'started' | 'streaming' | 'complete' | 'aborted'
     /**
      * Folders whose listing completed since the previous instalment. Empty on
      * the terminal instalments. Each is final: a folder is reported only once
