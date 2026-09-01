@@ -312,8 +312,10 @@ if [[ ${#env_vars[@]} -eq 0 ]]; then
 fi
 
 # --- Ensure required AWS/S3 credentials are set ---
-
-REQUIRED_AWS_KEYS=(COMPANION_AWS_KEY COMPANION_AWS_SECRET COMPANION_AWS_ENDPOINT)
+# COMPANION_AWS_BUCKET is required even in dynamic-bucket mode: it is the
+# fallback bucket used by getBucket() when an upload provides no bucketName
+# metadata, and without it getBucket() throws a TypeError at runtime.
+REQUIRED_AWS_KEYS=(COMPANION_AWS_KEY COMPANION_AWS_SECRET COMPANION_AWS_ENDPOINT COMPANION_AWS_BUCKET)
 for key in "${REQUIRED_AWS_KEYS[@]}"; do
   if [[ -z "${env_vars[$key]:-}" ]]; then
     if $AUTO; then
