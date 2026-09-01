@@ -19,11 +19,14 @@ import packageJson from '../../package.json' with { type: 'json' }
 import Browser from '../Browser.js'
 import FilterInput from '../FilterInput.js'
 import FooterActions from '../FooterActions.js'
-import addFiles from '../utils/addFiles.js'
+import addFiles, { duplicateFilesNotice } from '../utils/addFiles.js'
 import getClickedRange from '../utils/getClickedRange.js'
 import handleError from '../utils/handleError.js'
+import type { WalkFolder } from '../utils/PartialTreeUtils/afterFill.js'
 import getBreadcrumbs from '../utils/PartialTreeUtils/getBreadcrumbs.js'
-import getCheckedFilesWithPaths from '../utils/PartialTreeUtils/getCheckedFilesWithPaths.js'
+import getCheckedFilesWithPaths, {
+  createPathScratch,
+} from '../utils/PartialTreeUtils/getCheckedFilesWithPaths.js'
 import getNumberOfSelectedFiles from '../utils/PartialTreeUtils/getNumberOfSelectedFiles.js'
 import PartialTreeUtils from '../utils/PartialTreeUtils/index.js'
 import shouldHandleScroll from '../utils/shouldHandleScroll.js'
@@ -81,6 +84,18 @@ export interface Opts<M extends Meta, B extends Body> {
   }) => h.JSX.Element
   virtualList: boolean
   supportsSearch?: boolean
+  /**
+   * Hand files to Uppy DURING the folder walk instead of only when it finishes.
+   *
+   * Off by default, because it changes two guarantees an embedder may rely on:
+   * `files-added` fires many times for one selection, and aggregate
+   * restrictions can no longer be enforced before the first file is added (they
+   * are checked at the end, and a failure then removes everything the walk
+   * streamed — see `donePicking`). Opt in only if the host reacts to partial
+   * selections on purpose; ours renders the import review screen as the tree
+   * comes in, which is the whole point of the walk being visible at all.
+   */
+  streamWalkedFiles?: boolean
 }
 type PassedOpts<M extends Meta, B extends Body> = Optional<
   Opts<M, B>,
@@ -113,6 +128,13 @@ export default class ProviderView<M extends Meta, B extends Body> {
   // Test hook (mirrors GoldenRetriever pattern): allow tests to override debounce time
   // @ts-expect-error test-only hook key
   static [Symbol.for('uppy test: searchDebounceMs')]: number | undefined
+
+  // Test hook: the clock a streaming walk measures its flush cadence against.
+  // Without it a mocked walk finishes inside the 250ms floor, so every file
+  // lands in the single forced flush at the end — and any test about what
+  // happens DURING a walk silently becomes a test about what happens after it.
+  // @ts-expect-error test-only hook key
+  static [Symbol.for('uppy test: walkFlushClock')]: (() => number) | undefined
 
   plugin: UnknownProviderPlugin<M, B>
 
@@ -206,7 +228,27 @@ export default class ProviderView<M extends Meta, B extends Body> {
 
   #abortController: AbortController | undefined
 
-  async #withAbort(op: (signal: AbortSignal) => Promise<void>) {
+  /**
+   * @param op the abortable work
+   * @param ignorePanelClose treat only `cancel-all` as cancellation, not the
+   * Dashboard's panel closing.
+   *
+   * A STREAMING walk must set this, and it is not a nicety — it is what keeps
+   * the walk alive. Dashboard listens to `file-added` with `hideAllPanels`,
+   * which closes the acquirer panel and emits `dashboard:close-panel`. In the
+   * one-shot flow that lands after the walk has finished, so aborting is
+   * harmless. Streaming calls `addFiles` from inside the walk, so the FIRST
+   * instalment would emit it, abort the very walk that produced it, and throw
+   * away the whole selection. Only the first: `hideAllPanels` short-circuits
+   * once the panel is already closed — which is worse, not better, because it
+   * makes the failure depend on how quickly the host tears the Dashboard down.
+   *
+   * `cancel-all` still cancels, and so does another `#withAbort` starting.
+   */
+  async #withAbort(
+    op: (signal: AbortSignal) => Promise<void>,
+    { ignorePanelClose = false }: { ignorePanelClose?: boolean } = {},
+  ) {
     // prevent multiple requests in parallel from causing race conditions
     this.#abortController?.abort()
     const abortController = new AbortController()
@@ -215,10 +257,12 @@ export default class ProviderView<M extends Meta, B extends Body> {
       abortController.abort()
     }
     try {
-      // @ts-expect-error this should be typed in @uppy/dashboard.
-      // Even then I don't think we can make this work without adding dashboard
-      // as a dependency to provider-views.
-      this.plugin.uppy.on('dashboard:close-panel', cancelRequest)
+      if (!ignorePanelClose) {
+        // @ts-expect-error this should be typed in @uppy/dashboard.
+        // Even then I don't think we can make this work without adding dashboard
+        // as a dependency to provider-views.
+        this.plugin.uppy.on('dashboard:close-panel', cancelRequest)
+      }
       this.plugin.uppy.on('cancel-all', cancelRequest)
 
       await op(abortController.signal)
@@ -502,54 +546,240 @@ export default class ProviderView<M extends Meta, B extends Body> {
     return result
   }
 
+  /**
+   * Announce one instalment of a streaming walk.
+   *
+   * Separate from `provider-walk-progress` (which is counters only, and fires
+   * whether or not streaming is on): this carries the walked folders, so a host
+   * can render structure — and its terminal `status` is the only reliable end
+   * signal.
+   *
+   * `files-added` cannot stand in for it, in either direction. During the walk
+   * it fires many times for what the user experienced as one selection, and
+   * none of those mean "done". At the end it usually does not fire at all: the
+   * final instalment normally has nothing left to add, and `addFiles` declines
+   * to hand Uppy an empty batch — so there is no terminal `files-added` to wait
+   * for.
+   */
+  #emitWalkBatch(
+    status: 'started' | 'streaming' | 'complete' | 'aborted',
+    folders: WalkFolder[],
+    fileCount: number,
+  ): void {
+    // Stamped with the plugin id for the same reason the progress event is:
+    // several provider plugins share one Uppy instance, and a cancelled walk
+    // can report after the user has moved to another panel.
+    this.plugin.uppy.emit('provider-walk-batch', {
+      providerId: this.plugin.id,
+      status,
+      folders,
+      fileCount,
+    })
+  }
+
   async donePicking(): Promise<void> {
     const { partialTree } = this.plugin.getPluginState()
 
     if (this.isLoading) return
     this.setLoading(true)
-    await this.#withAbort(async (signal) => {
-      // 1. Enrich our partialTree by fetching all 'checked' but not-yet-fetched folders
-      const enrichedTree: PartialTree = await PartialTreeUtils.afterFill(
-        partialTree,
-        (path: PartialTreeId) => this.provider.list(path, { signal }),
-        this.validateSingleFile,
-        (progress) => {
-          this.setLoading(
-            this.plugin.uppy.i18n('addedNumFiles', {
-              numFiles: progress.filesFound,
-            }),
+
+    const streaming = this.opts.streamWalkedFiles === true
+    // Shared with the final `getCheckedFilesWithPaths` below so the paths the
+    // walk already derived are not derived a second time.
+    const scratch = createPathScratch()
+    const streamedIds = new Set<PartialTreeId>()
+    const streamedUppyIds: string[] = []
+    let streamedCount = 0
+    // `quiet` silences the per-instalment duplicate notice as well as the added
+    // one, so a streaming walk owes the user a single aggregate of both. Without
+    // this, re-picking a folder whose files are already on the instance would
+    // stream instalment after instalment reporting nothing added and say nothing
+    // about why.
+    let skippedCount = 0
+    let lastProgress: { foldersRemaining: number } | null = null
+
+    // Everything the walk handed over before it failed, was cancelled, or hit an
+    // aggregate restriction. Without streaming those cases add nothing at all,
+    // so leaving partial files behind would be a new way to fail — the host
+    // would be left reviewing a selection the user never completed.
+    const discardStreamedFiles = () => {
+      if (streamedUppyIds.length > 0) {
+        try {
+          this.plugin.uppy.removeFiles(streamedUppyIds)
+        } catch (err) {
+          // `removeFiles` throws when the removal would partly empty an upload
+          // already running under an uploader without `individualCancellation`
+          // — reachable for a host with `autoProceed`, since streaming starts
+          // uploads mid-walk. This runs on the cancellation and
+          // restriction-failure paths, so throwing would replace a clean abort
+          // with an exception AND still leave the files behind. The host is
+          // told `aborted` either way, which is the part that matters: its
+          // derived state goes.
+          this.plugin.uppy.log(
+            `Could not discard streamed files after an aborted walk: ${err}`,
+            'warning',
           )
-          // Also surfaced as an event so an embedding app can render its own
-          // progress. The loading label is Uppy's internal UI and is i18n'd, so
-          // it is not something a host can reliably read.
-          //
-          // Stamped with the plugin id because the event is global to the Uppy
-          // instance: several provider plugins are usually installed together,
-          // and a cancelled walk can emit its terminal report after the user has
-          // moved to another panel. Without this a host cannot tell whose
-          // numbers it is showing.
-          this.plugin.uppy.emit('provider-walk-progress', {
-            ...progress,
-            providerId: this.plugin.id,
-          })
-        },
-      )
-
-      // 2. Now that we know how many files there are - recheck aggregateRestrictions!
-      const aggregateRestrictionError =
-        this.validateAggregateRestrictions(enrichedTree)
-      if (aggregateRestrictionError) {
-        this.plugin.setPluginState({ partialTree: enrichedTree })
-        return
+        }
+        streamedUppyIds.length = 0
       }
+      streamedIds.clear()
+      streamedCount = 0
+      skippedCount = 0
+    }
 
-      // 3. Add files
-      const companionFiles = getCheckedFilesWithPaths(enrichedTree)
-      addFiles(companionFiles, this.plugin, this.provider)
+    // Announced before the first listing, so a host can open its own review UI
+    // on an empty selection and fill it in. Without it the host would first
+    // hear about the walk from `files-added` — by which point it has already
+    // had to decide, blind, whether this is a streaming walk or a one-shot one.
+    if (streaming) this.#emitWalkBatch('started', [], 0)
 
-      // 4. Reset state
-      this.resetPluginState()
-    }).catch(handleError(this.plugin.uppy))
+    await this.#withAbort(
+      async (signal) => {
+        // 1. Enrich our partialTree by fetching all 'checked' but not-yet-fetched folders
+        const enrichedTree: PartialTree = await PartialTreeUtils.afterFill(
+          partialTree,
+          (path: PartialTreeId) => this.provider.list(path, { signal }),
+          this.validateSingleFile,
+          (progress) => {
+            lastProgress = progress
+            this.setLoading(
+              this.plugin.uppy.i18n('addedNumFiles', {
+                numFiles: progress.filesFound,
+              }),
+            )
+            // Also surfaced as an event so an embedding app can render its own
+            // progress. The loading label is Uppy's internal UI and is i18n'd, so
+            // it is not something a host can reliably read.
+            //
+            // Stamped with the plugin id because the event is global to the Uppy
+            // instance: several provider plugins are usually installed together,
+            // and a cancelled walk can emit its terminal report after the user has
+            // moved to another panel. Without this a host cannot tell whose
+            // numbers it is showing.
+            this.plugin.uppy.emit('provider-walk-progress', {
+              ...progress,
+              providerId: this.plugin.id,
+            })
+          },
+          streaming
+            ? {
+                scratch,
+                now: (
+                  ProviderView as unknown as Record<
+                    symbol,
+                    (() => number) | undefined
+                  >
+                )[Symbol.for('uppy test: walkFlushClock')],
+                onBatch: ({ files, folders }) => {
+                  for (const file of files) streamedIds.add(file.requestPath)
+                  let addedNow = 0
+                  // Empty is fine to pass: `addFiles` declines to bother Uppy
+                  // when nothing survives its filtering, which covers both a
+                  // folders-only instalment and a batch that turns out to be
+                  // entirely re-served.
+                  addFiles(files, this.plugin, this.provider, {
+                    // One notice for the whole selection, emitted at the end —
+                    // not one per instalment.
+                    quiet: true,
+                    onAdded: (ids) => {
+                      // Appended, not spread — see the same note in `afterFill`.
+                      for (const id of ids) streamedUppyIds.push(id)
+                      addedNow = ids.length
+                    },
+                    onSkipped: (skipped) => {
+                      skippedCount += skipped
+                    },
+                  })
+                  // What Uppy TOOK, not what the walk offered: `addFiles` skips
+                  // a file that already exists or fails a restriction, and both
+                  // the toast and `provider-walk-batch.fileCount` claim to
+                  // count files that are on the instance.
+                  streamedCount += addedNow
+                  this.#emitWalkBatch('streaming', folders, addedNow)
+                },
+              }
+            : undefined,
+        )
+
+        // 2. An incomplete walk is not a complete selection.
+        //
+        // `afterFill` discards the promises from `queue.add`, so a listing that
+        // was cancelled or failed does NOT reject here — the walk finishes and
+        // returns a PARTIAL tree, which is why `cancel-all` mid-walk otherwise
+        // lands as a clean `complete`. The terminal progress report is what
+        // reveals it: folders queued but never walked.
+        //
+        // Telling a streaming host `complete` on a partial tree is the worst
+        // outcome available — it would import the folders that happened to be
+        // listed first and silently drop the rest — so this discards instead. The
+        // one-shot path keeps its existing behaviour of adding what it got.
+        if (streaming && (lastProgress?.foldersRemaining ?? 0) > 0) {
+          discardStreamedFiles()
+          this.#emitWalkBatch('aborted', [], 0)
+          this.plugin.setPluginState({ partialTree: enrichedTree })
+          return
+        }
+
+        // 3. Now that we know how many files there are - recheck aggregateRestrictions!
+        const aggregateRestrictionError =
+          this.validateAggregateRestrictions(enrichedTree)
+        if (aggregateRestrictionError) {
+          // A streaming walk has already added files by the time we get here —
+          // the restriction is about the selection as a whole, so the selection
+          // as a whole has to go.
+          discardStreamedFiles()
+          if (streaming) this.#emitWalkBatch('aborted', [], 0)
+          this.plugin.setPluginState({ partialTree: enrichedTree })
+          return
+        }
+
+        // 4. Add whatever the walk did not already stream. Usually nothing when
+        //    streaming — but a folder that was checked and already `cached` before
+        //    the walk began is never re-listed, so its files never pass through
+        //    the sink.
+        const companionFiles = getCheckedFilesWithPaths(enrichedTree, {
+          exclude: streaming ? streamedIds : undefined,
+          scratch,
+        })
+        // Called unconditionally: `addFiles` declines to hand Uppy an empty
+        // batch itself, so the streaming case usually reaches here, adds
+        // nothing, and emits nothing. The condition this used to carry became
+        // dead the moment that guard moved into the helper.
+        let addedFinally = 0
+        addFiles(companionFiles, this.plugin, this.provider, {
+          quiet: streaming,
+          onAdded: (ids) => {
+            addedFinally = ids.length
+          },
+          onSkipped: (skipped) => {
+            skippedCount += skipped
+          },
+        })
+        if (streaming) {
+          // The one notice the whole selection gets, standing in for the ones
+          // `quiet` suppressed on every instalment.
+          const total = streamedCount + addedFinally
+          if (total > 0) {
+            this.plugin.uppy.info(
+              this.plugin.uppy.i18n('addedNumFiles', { numFiles: total }),
+            )
+          }
+          if (skippedCount > 0) {
+            this.plugin.uppy.info(duplicateFilesNotice(skippedCount))
+          }
+          this.#emitWalkBatch('complete', [], addedFinally)
+        }
+
+        // 5. Reset state
+        this.resetPluginState()
+      },
+      { ignorePanelClose: streaming },
+    ).catch((err) => {
+      // Cancelled, or a listing failed. Either way the selection is incomplete.
+      discardStreamedFiles()
+      if (streaming) this.#emitWalkBatch('aborted', [], 0)
+      return handleError(this.plugin.uppy)(err)
+    })
     this.setLoading(false)
   }
 
