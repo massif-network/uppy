@@ -87,6 +87,29 @@ describe('addFiles()', () => {
     expect(onAdded).toHaveBeenLastCalledWith(offered[1])
   })
 
+  it('does not bother Uppy when nothing survives the filtering', () => {
+    const { plugin, provider, offered } = setup()
+    const onAdded = vi.fn()
+
+    addFiles([cFile('a')], plugin as never, provider as never)
+    // Every file in this batch is already on the instance — what a re-served
+    // page looks like — so there is nothing left to add.
+    addFiles([cFile('a')], plugin as never, provider as never, { onAdded })
+
+    // `Uppy.addFiles([])` still clones the whole file set into a `setState` and
+    // emits `files-added`, re-rendering every subscriber for no change.
+    expect(offered).toHaveLength(1)
+    expect(onAdded).toHaveBeenCalledWith([])
+  })
+
+  it('does not bother Uppy with an empty batch at all', () => {
+    const { plugin, provider, offered } = setup()
+
+    addFiles([], plugin as never, provider as never)
+
+    expect(offered).toEqual([])
+  })
+
   it('stays silent when asked to', () => {
     // A streaming walk calls this dozens of times for ONE user action; the
     // single notice for the whole selection is the caller's to emit.

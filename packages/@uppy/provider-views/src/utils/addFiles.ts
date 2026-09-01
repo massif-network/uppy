@@ -70,7 +70,14 @@ const addFiles = <M extends Meta, B extends Body>(
       )
     }
   }
-  plugin.uppy.addFiles(filesToAdd)
+  // `Uppy.addFiles([])` still clones the whole file set into a `setState` and
+  // emits `files-added`, re-rendering every subscriber for no change. Reachable
+  // with a non-empty argument too — every file in the batch having been
+  // filtered out above is exactly what a re-served page looks like. Unreachable
+  // for an EMPTY selection, which is what would otherwise notice the missing
+  // event: `FooterActions` does not render the confirm button at all until
+  // something is checked.
+  if (filesToAdd.length > 0) plugin.uppy.addFiles(filesToAdd)
   // Read back after the add, so a consumer reacting to these ids can find every
   // one of them on the instance — and so a restriction failure narrows the list
   // instead of silently inflating it.

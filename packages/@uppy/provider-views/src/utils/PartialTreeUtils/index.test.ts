@@ -1038,9 +1038,15 @@ describe('afterFill() streaming', () => {
       return Promise.reject(new Error(`unexpected list: ${path}`))
     }
 
-    const { batches, enrichedTree } = await walk({ tree, api, now: impatientClock() })
+    const { batches, enrichedTree } = await walk({
+      tree,
+      api,
+      now: impatientClock(),
+    })
 
-    const top = batches.flatMap((b) => b.folders).find((f) => f.path === 'name_top')
+    const top = batches
+      .flatMap((b) => b.folders)
+      .find((f) => f.path === 'name_top')
     expect(top).toEqual({ path: 'name_top', fileCount: 1, subfolderCount: 1 })
     expect(batches.flatMap((b) => b.files).map((f) => f.id)).toEqual(['a'])
     expect(listed.filter((path) => path === 'sub')).toHaveLength(1)

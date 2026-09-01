@@ -270,4 +270,3 @@ describe('donePicking() streaming', () => {
     expect(addFiles.mock.calls.every(([files]) => files.length > 0)).toBe(true)
   })
 })
-

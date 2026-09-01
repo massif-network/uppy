@@ -660,22 +660,20 @@ export default class ProviderView<M extends Meta, B extends Body> {
                 onBatch: ({ files, folders }) => {
                   for (const file of files) streamedIds.add(file.requestPath)
                   let addedNow = 0
-                  // Skipped for a folders-only instalment (walked-but-empty
-                  // folders). `Uppy.addFiles([])` still clones the whole file
-                  // set into a `setState` and emits `files-added`, which
-                  // re-renders every subscriber for no change — the exact cost
-                  // the flush cadence exists to keep rare.
-                  if (files.length > 0)
-                    addFiles(files, this.plugin, this.provider, {
-                      // One notice for the whole selection, emitted at the end —
-                      // not one per instalment.
-                      quiet: true,
-                      onAdded: (ids) => {
-                        // Appended, not spread — see the same note in `afterFill`.
-                        for (const id of ids) streamedUppyIds.push(id)
-                        addedNow = ids.length
-                      },
-                    })
+                  // Empty is fine to pass: `addFiles` declines to bother Uppy
+                  // when nothing survives its filtering, which covers both a
+                  // folders-only instalment and a batch that turns out to be
+                  // entirely re-served.
+                  addFiles(files, this.plugin, this.provider, {
+                    // One notice for the whole selection, emitted at the end —
+                    // not one per instalment.
+                    quiet: true,
+                    onAdded: (ids) => {
+                      // Appended, not spread — see the same note in `afterFill`.
+                      for (const id of ids) streamedUppyIds.push(id)
+                      addedNow = ids.length
+                    },
+                  })
                   // What Uppy TOOK, not what the walk offered: `addFiles` skips
                   // a file that already exists or fails a restriction, and both
                   // the toast and `provider-walk-batch.fileCount` claim to
