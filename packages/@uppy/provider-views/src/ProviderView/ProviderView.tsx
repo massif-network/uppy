@@ -19,7 +19,7 @@ import packageJson from '../../package.json' with { type: 'json' }
 import Browser from '../Browser.js'
 import FilterInput from '../FilterInput.js'
 import FooterActions from '../FooterActions.js'
-import addFiles from '../utils/addFiles.js'
+import addFiles, { duplicateFilesNotice } from '../utils/addFiles.js'
 import getClickedRange from '../utils/getClickedRange.js'
 import handleError from '../utils/handleError.js'
 import type { WalkFolder } from '../utils/PartialTreeUtils/afterFill.js'
@@ -590,6 +590,12 @@ export default class ProviderView<M extends Meta, B extends Body> {
     const streamedIds = new Set<PartialTreeId>()
     const streamedUppyIds: string[] = []
     let streamedCount = 0
+    // `quiet` silences the per-instalment duplicate notice as well as the added
+    // one, so a streaming walk owes the user a single aggregate of both. Without
+    // this, re-picking a folder whose files are already on the instance would
+    // stream instalment after instalment reporting nothing added and say nothing
+    // about why.
+    let skippedCount = 0
     let lastProgress: { foldersRemaining: number } | null = null
 
     // Everything the walk handed over before it failed, was cancelled, or hit an
@@ -618,6 +624,7 @@ export default class ProviderView<M extends Meta, B extends Body> {
       }
       streamedIds.clear()
       streamedCount = 0
+      skippedCount = 0
     }
 
     // Announced before the first listing, so a host can open its own review UI
@@ -678,6 +685,9 @@ export default class ProviderView<M extends Meta, B extends Body> {
                       // Appended, not spread — see the same note in `afterFill`.
                       for (const id of ids) streamedUppyIds.push(id)
                       addedNow = ids.length
+                    },
+                    onSkipped: (skipped) => {
+                      skippedCount += skipped
                     },
                   })
                   // What Uppy TOOK, not what the walk offered: `addFiles` skips
@@ -741,13 +751,21 @@ export default class ProviderView<M extends Meta, B extends Body> {
           onAdded: (ids) => {
             addedFinally = ids.length
           },
+          onSkipped: (skipped) => {
+            skippedCount += skipped
+          },
         })
         if (streaming) {
+          // The one notice the whole selection gets, standing in for the ones
+          // `quiet` suppressed on every instalment.
           const total = streamedCount + addedFinally
           if (total > 0) {
             this.plugin.uppy.info(
               this.plugin.uppy.i18n('addedNumFiles', { numFiles: total }),
             )
+          }
+          if (skippedCount > 0) {
+            this.plugin.uppy.info(duplicateFilesNotice(skippedCount))
           }
           this.#emitWalkBatch('complete', [], addedFinally)
         }

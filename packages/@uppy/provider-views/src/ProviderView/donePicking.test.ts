@@ -85,22 +85,27 @@ const setup = ({ stream }: { stream: boolean }) => {
   })
   // `resetPluginState()` in the constructor seeded the default tree; replace it
   // with one checked, uncached folder so `afterFill` has something to walk.
-  plugin.setPluginState({
-    partialTree: [
-      { type: 'root', id: null, cached: false, nextPagePath: null },
-      {
-        type: 'folder',
-        id: 'top',
-        parentId: null,
-        cached: false,
-        nextPagePath: null,
-        status: 'checked',
-        data: cFolder('top'),
-      },
-    ],
-  })
+  // Callable again to re-pick the same selection on the same Uppy instance,
+  // which is how a file becomes a duplicate.
+  const seed = () => {
+    plugin.setPluginState({
+      partialTree: [
+        { type: 'root', id: null, cached: false, nextPagePath: null },
+        {
+          type: 'folder',
+          id: 'top',
+          parentId: null,
+          cached: false,
+          nextPagePath: null,
+          status: 'checked',
+          data: cFolder('top'),
+        },
+      ],
+    })
+  }
+  seed()
 
-  return { uppy, view, provider }
+  return { uppy, view, provider, seed }
 }
 
 describe('donePicking() streaming', () => {
@@ -118,6 +123,26 @@ describe('donePicking() streaming', () => {
 
   afterEach(() => {
     ;(ProviderView as unknown as Record<symbol, unknown>)[CLOCK] = undefined
+  })
+
+  it('reports duplicates once for the selection, not once per instalment', async () => {
+    const { uppy, view, seed } = setup({ stream: true })
+
+    await view.donePicking()
+    // a.jpg, b.jpg, sub/c.jpg — `empty/` contributes none.
+    expect(uppy.getFiles()).toHaveLength(3)
+
+    const info = vi.spyOn(uppy, 'info')
+    // The same folder picked a second time: every file the walk streams is
+    // already on the instance, so every instalment is entirely duplicates.
+    seed()
+    await view.donePicking()
+
+    const notices = info.mock.calls.map(([message]) => String(message))
+    // `quiet` silences the per-instalment notice, so without an aggregate the
+    // user is told nothing at all about a selection that added nothing.
+    expect(notices).toEqual(['Not adding 3 duplicate files'])
+    expect(uppy.getFiles()).toHaveLength(3)
   })
 
   it('is not cancelled by the panel closing behind its own first instalment', async () => {

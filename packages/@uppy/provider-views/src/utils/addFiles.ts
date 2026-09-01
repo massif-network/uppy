@@ -10,6 +10,15 @@ import type {
 import { getSafeFileId } from '@uppy/utils'
 import companionFileToUppyFile from './companionFileToUppyFile.js'
 
+/**
+ * Exported so a caller that suppresses the per-batch notices with `quiet` and
+ * aggregates them itself says the same thing this does. Not i18n'd — upstream
+ * has no message key for it, and inventing one here would fork the locale
+ * files too.
+ */
+export const duplicateFilesNotice = (count: number): string =>
+  `Not adding ${count} duplicate files`
+
 export type AddFilesOptions = {
   /**
    * Suppress the "Added N files" / "Not adding N files" notices.
@@ -27,6 +36,15 @@ export type AddFilesOptions = {
    * needs to know — a count to report, or a set of ids to remove again.
    */
   onAdded?: (uppyFileIds: string[]) => void
+  /**
+   * How many files this batch skipped as duplicates — already on the instance,
+   * or claimed by an earlier entry in the same batch.
+   *
+   * The counterpart to `quiet`: a streaming caller silences the per-batch
+   * notice and owes the user one notice for the whole selection, which it
+   * cannot write without this count.
+   */
+  onSkipped?: (duplicateCount: number) => void
 }
 
 const addFiles = <M extends Meta, B extends Body>(
@@ -86,10 +104,11 @@ const addFiles = <M extends Meta, B extends Body>(
       )
     }
     if (duplicateFiles.length > 0) {
-      plugin.uppy.info(`Not adding ${duplicateFiles.length} duplicate files`)
+      plugin.uppy.info(duplicateFilesNotice(duplicateFiles.length))
     }
   }
   options.onAdded?.(addedIds)
+  options.onSkipped?.(duplicateFiles.length)
 }
 
 export default addFiles
