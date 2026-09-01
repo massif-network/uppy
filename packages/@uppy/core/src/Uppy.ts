@@ -346,9 +346,11 @@ export interface _UppyEventMap<M extends Meta, B extends Body> {
    * one), so this event carries the structure around them rather than the files
    * themselves.
    *
-   * `status` is the walk's lifecycle, and the only trustworthy one:
-   * `files-added` cannot stand in for it, because the final instalment is
-   * usually empty and `addFiles([])` emits `files-added` all the same.
+   * `status` is the walk's lifecycle, and the only trustworthy one.
+   * `files-added` cannot stand in for it in either direction: during the walk
+   * it fires many times for what the user experienced as one selection, and at
+   * the end it usually does not fire at all, because the final instalment
+   * normally has nothing left to add.
    */
   'provider-walk-batch': (batch: {
     /** Which provider plugin emitted this — see `provider-walk-progress`. */

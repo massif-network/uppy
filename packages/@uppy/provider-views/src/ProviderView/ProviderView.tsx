@@ -552,8 +552,14 @@ export default class ProviderView<M extends Meta, B extends Body> {
    * Separate from `provider-walk-progress` (which is counters only, and fires
    * whether or not streaming is on): this carries the walked folders, so a host
    * can render structure — and its terminal `status` is the only reliable end
-   * signal. `files-added` is not: with streaming on, the last batch is usually
-   * empty, and `addFiles([])` still emits it.
+   * signal.
+   *
+   * `files-added` cannot stand in for it, in either direction. During the walk
+   * it fires many times for what the user experienced as one selection, and
+   * none of those mean "done". At the end it usually does not fire at all: the
+   * final instalment normally has nothing left to add, and `addFiles` declines
+   * to hand Uppy an empty batch — so there is no terminal `files-added` to wait
+   * for.
    */
   #emitWalkBatch(
     status: 'started' | 'streaming' | 'complete' | 'aborted',
@@ -725,15 +731,17 @@ export default class ProviderView<M extends Meta, B extends Body> {
           exclude: streaming ? streamedIds : undefined,
           scratch,
         })
+        // Called unconditionally: `addFiles` declines to hand Uppy an empty
+        // batch itself, so the streaming case usually reaches here, adds
+        // nothing, and emits nothing. The condition this used to carry became
+        // dead the moment that guard moved into the helper.
         let addedFinally = 0
-        if (companionFiles.length > 0 || !streaming) {
-          addFiles(companionFiles, this.plugin, this.provider, {
-            quiet: streaming,
-            onAdded: (ids) => {
-              addedFinally = ids.length
-            },
-          })
-        }
+        addFiles(companionFiles, this.plugin, this.provider, {
+          quiet: streaming,
+          onAdded: (ids) => {
+            addedFinally = ids.length
+          },
+        })
         if (streaming) {
           const total = streamedCount + addedFinally
           if (total > 0) {
