@@ -18,10 +18,15 @@ const cFile = (id: string): CompanionFile =>
 const cFolder = (id: string): CompanionFile =>
   ({ id, requestPath: id, name: id, isFolder: true }) as CompanionFile
 
-// top/ a.jpg b.jpg  +  top/sub/ c.jpg
+// top/ a.jpg b.jpg  +  top/sub/ c.jpg  +  top/empty/ (walked, and empty)
 const items = (path: string | null) => {
-  if (path === 'top') return [cFile('a'), cFile('b'), cFolder('sub')]
+  if (path === 'top') {
+    return [cFile('a'), cFile('b'), cFolder('sub'), cFolder('empty')]
+  }
   if (path === 'sub') return [cFile('c')]
+  // Walked and genuinely empty: its instalment carries a folder record and no
+  // files, which is the case the empty-batch guard is about.
+  if (path === 'empty') return []
   return null
 }
 
@@ -249,4 +254,20 @@ describe('donePicking() streaming', () => {
     expect(uppy.getFiles()).toHaveLength(1)
     expect(counts.reduce((total, n) => total + n, 0)).toEqual(1)
   })
+
+  it('does not push an empty batch through Uppy', async () => {
+    const { uppy, view } = setup({ stream: true })
+    const addFiles = vi.spyOn(uppy, 'addFiles')
+
+    await view.donePicking()
+
+    // `sub2` is walked and empty, so its instalment carries folders but no
+    // files. `Uppy.addFiles([])` still clones the whole file set into a
+    // `setState` and emits `files-added`, re-rendering every subscriber for no
+    // change — one call per empty folder is exactly the cost the flush cadence
+    // exists to keep rare.
+    expect(addFiles).toHaveBeenCalledTimes(2)
+    expect(addFiles.mock.calls.every(([files]) => files.length > 0)).toBe(true)
+  })
 })
+

@@ -101,6 +101,44 @@ const FLUSH_MAX_MS = 5_000
 /** Streamed-file count per millisecond of flush interval. */
 const FLUSH_FILES_PER_MS = 20
 
+/**
+ * The direct children each folder ALREADY had when the walk began.
+ *
+ * Built once, before anything is queued, and used for two things:
+ *
+ *  - **De-duplication.** A folder's pages are drained into one listing, so a
+ *    provider paginating unstably can hand back the same item twice — and a
+ *    resumed folder can be re-served something it already has. Left alone, the
+ *    tree gains duplicate nodes, a repeated FOLDER gets queued and walked
+ *    twice, and every count derived from the listing is inflated.
+ *  - **Whole-shape reporting.** A folder the user opened is `cached` with a
+ *    `nextPagePath`, so its listing covers only what was left; its earlier
+ *    children have to be folded back in or a streamed record understates it.
+ *
+ * One pass, not a scan per walked folder — that would be O(tree) per folder,
+ * the quadratic this whole arrangement exists to avoid.
+ */
+type ExistingChildren = Map<
+  PartialTreeId,
+  { files: PartialTreeFile[]; folderCount: number; ids: Set<PartialTreeId> }
+>
+
+const collectExistingChildren = (poorTree: PartialTree): ExistingChildren => {
+  const byParent: ExistingChildren = new Map()
+  for (const node of poorTree) {
+    if (node.type === 'root') continue
+    let bucket = byParent.get(node.parentId)
+    if (!bucket) {
+      bucket = { files: [], folderCount: 0, ids: new Set() }
+      byParent.set(node.parentId, bucket)
+    }
+    bucket.ids.add(node.id)
+    if (node.type === 'folder') bucket.folderCount += 1
+    else if (node.status === 'checked') bucket.files.push(node)
+  }
+  return byParent
+}
+
 const recursivelyFetch = async (
   queue: PQueue,
   poorTree: PartialTree,
@@ -113,6 +151,7 @@ const recursivelyFetch = async (
     foldersQueued: number
   },
   sink: WalkSink | null,
+  existingChildren: ExistingChildren,
 ) => {
   let items: CompanionFile[] = []
   let currentPath: PartialTreeId = poorFolder.cached
@@ -124,8 +163,19 @@ const recursivelyFetch = async (
     currentPath = response.nextPagePath
   }
 
-  const newFolders = items.filter((i) => i.isFolder === true)
-  const newFiles = items.filter((i) => i.isFolder === false)
+  // Anything this folder is already holding, plus anything a repeated page has
+  // already handed us in this same listing. A duplicate file would inflate
+  // every count derived from the listing; a duplicate FOLDER would be queued
+  // and walked twice.
+  const seen = new Set<PartialTreeId>(existingChildren.get(poorFolder.id)?.ids)
+  const fresh = items.filter((item) => {
+    if (seen.has(item.requestPath)) return false
+    seen.add(item.requestPath)
+    return true
+  })
+
+  const newFolders = fresh.filter((i) => i.isFolder === true)
+  const newFiles = fresh.filter((i) => i.isFolder === false)
 
   const folders: PartialTreeFolderNode[] = newFolders.map((folder) => ({
     type: 'folder',
@@ -179,6 +229,7 @@ const recursivelyFetch = async (
         validateSingleFile,
         counters,
         sink,
+        existingChildren,
       ),
     )
   })
@@ -203,37 +254,10 @@ type WalkSink = {
 const createWalkSink = (
   poorTree: PartialTree,
   stream: WalkStream,
+  existingChildren: ExistingChildren,
 ): WalkSink => {
   const now = stream.now ?? (() => Date.now())
   const scratch = stream.scratch ?? createPathScratch()
-
-  // Children a folder ALREADY had before the walk began.
-  //
-  // A folder the user opened in the browser is `cached` with a `nextPagePath`,
-  // and the walk resumes from that page — so the listing it gets back covers
-  // only what is left. Counting just those would understate the folder's shape
-  // and, worse, break the promise that a reported folder is FINAL: a consumer
-  // deciding leaf-versus-intermediary from `subfolderCount` would decide it
-  // from a fraction of the children. The already-loaded files would also skip
-  // the stream entirely and only turn up in the final pass.
-  //
-  // Collected in ONE pass here rather than by scanning `poorTree` per walked
-  // folder, which would be O(tree) per folder — the quadratic this whole
-  // arrangement exists to avoid.
-  const alreadyPresent = new Map<
-    PartialTreeId,
-    { files: PartialTreeFile[]; folderCount: number }
-  >()
-  for (const node of poorTree) {
-    if (node.type === 'root') continue
-    let bucket = alreadyPresent.get(node.parentId)
-    if (!bucket) {
-      bucket = { files: [], folderCount: 0 }
-      alreadyPresent.set(node.parentId, bucket)
-    }
-    if (node.type === 'folder') bucket.folderCount += 1
-    else if (node.status === 'checked') bucket.files.push(node)
-  }
 
   let pendingFiles: PartialTreeFile[] = []
   let pendingFolders: WalkFolder[] = []
@@ -244,8 +268,8 @@ const createWalkSink = (
     record: (folder, files, subfolderCount) => {
       // Consumed, not merely read: a folder is walked once, so counting its
       // pre-existing children a second time is not possible after this.
-      const carried = alreadyPresent.get(folder.id)
-      alreadyPresent.delete(folder.id)
+      const carried = existingChildren.get(folder.id)
+      existingChildren.delete(folder.id)
 
       pendingFolders.push({
         path: getFolderRelativePath(poorTree, folder, scratch),
@@ -293,7 +317,10 @@ const afterFill = async (
   // fill up the missing parts of a partialTree!
   const poorTree: PartialTree = shallowClone(partialTree)
 
-  const sink = stream ? createWalkSink(poorTree, stream) : null
+  const existingChildren = collectExistingChildren(poorTree)
+  const sink = stream
+    ? createWalkSink(poorTree, stream, existingChildren)
+    : null
 
   // Seeded from what is ALREADY checked, then incremented as new files arrive.
   // A partial tree can carry checked files from folders the user opened earlier
@@ -326,6 +353,7 @@ const afterFill = async (
         validateSingleFile,
         counters,
         sink,
+        existingChildren,
       ),
     )
   })

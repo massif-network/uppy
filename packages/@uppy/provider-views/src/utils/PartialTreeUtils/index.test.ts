@@ -998,12 +998,53 @@ describe('afterFill() streaming', () => {
 
     const { batches } = await walk({ tree, api, now: impatientClock() })
 
-    const top = batches.flatMap((b) => b.folders).find((f) => f.path === 'name_top')
+    const top = batches
+      .flatMap((b) => b.folders)
+      .find((f) => f.path === 'name_top')
     expect(top).toEqual({ path: 'name_top', fileCount: 2, subfolderCount: 2 })
 
     // ...and the file from page 1 is streamed with the rest, rather than
     // skipping the stream and turning up only in the final pass.
     expect(batches.flatMap((b) => b.files).map((f) => f.id)).toContain('seen_1')
+  })
+
+  it('counts a repeated page item once, and walks a repeated folder once', async () => {
+    // A provider paginating unstably re-serves an item on the next page. The
+    // pages drain into ONE listing, so without de-duplication the tree gains a
+    // second node, `fileCount` is inflated, and — worse — the repeated FOLDER
+    // is queued and listed twice.
+    const tree: PartialTree = [
+      _root('ourRoot'),
+      _folder('top', { parentId: 'ourRoot', cached: false, status: 'checked' }),
+    ]
+    const listed: string[] = []
+    const api = (path: PartialTreeId) => {
+      listed.push(String(path))
+      if (path === 'top') {
+        return Promise.resolve({
+          nextPagePath: 'top-page-2',
+          items: [_cFile('a'), _cFolder('sub')],
+        })
+      }
+      if (path === 'top-page-2') {
+        return Promise.resolve({
+          nextPagePath: null,
+          items: [_cFile('a'), _cFolder('sub')],
+        })
+      }
+      if (path === 'sub') {
+        return Promise.resolve({ nextPagePath: null, items: [] })
+      }
+      return Promise.reject(new Error(`unexpected list: ${path}`))
+    }
+
+    const { batches, enrichedTree } = await walk({ tree, api, now: impatientClock() })
+
+    const top = batches.flatMap((b) => b.folders).find((f) => f.path === 'name_top')
+    expect(top).toEqual({ path: 'name_top', fileCount: 1, subfolderCount: 1 })
+    expect(batches.flatMap((b) => b.files).map((f) => f.id)).toEqual(['a'])
+    expect(listed.filter((path) => path === 'sub')).toHaveLength(1)
+    expect(enrichedTree.filter((node) => node.id === 'a')).toHaveLength(1)
   })
 
   it('leaves an already-cached folder to the final pass', async () => {
