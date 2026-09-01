@@ -61,16 +61,6 @@ const addFiles = <M extends Meta, B extends Body>(
     idsToAdd.push(id)
   })
 
-  if (!options.quiet) {
-    if (filesToAdd.length > 0) {
-      plugin.uppy.info(
-        plugin.uppy.i18n('addedNumFiles', { numFiles: filesToAdd.length }),
-      )
-    }
-    if (duplicateFiles.length > 0) {
-      plugin.uppy.info(`Not adding ${duplicateFiles.length} duplicate files`)
-    }
-  }
   // `Uppy.addFiles([])` still clones the whole file set into a `setState` and
   // emits `files-added`, re-rendering every subscriber for no change. Reachable
   // with a non-empty argument too — every file in the batch having been
@@ -82,7 +72,24 @@ const addFiles = <M extends Meta, B extends Body>(
   // Read back after the add, so a consumer reacting to these ids can find every
   // one of them on the instance — and so a restriction failure narrows the list
   // instead of silently inflating it.
-  options.onAdded?.(idsToAdd.filter((id) => plugin.uppy.getFile(id) != null))
+  const addedIds = idsToAdd.filter((id) => plugin.uppy.getFile(id) != null)
+
+  // Counted from the same read-back, and for the same reason. `uppy.addFiles`
+  // drops a file that fails a per-file restriction without throwing, so a
+  // notice raised before the add would claim files the user never got — and
+  // would still say "Added 3 files" in the case where every one of them was
+  // rejected. That the notice comes after the add is what makes it true.
+  if (!options.quiet) {
+    if (addedIds.length > 0) {
+      plugin.uppy.info(
+        plugin.uppy.i18n('addedNumFiles', { numFiles: addedIds.length }),
+      )
+    }
+    if (duplicateFiles.length > 0) {
+      plugin.uppy.info(`Not adding ${duplicateFiles.length} duplicate files`)
+    }
+  }
+  options.onAdded?.(addedIds)
 }
 
 export default addFiles

@@ -342,9 +342,9 @@ export interface _UppyEventMap<M extends Meta, B extends Body> {
   /**
    * One instalment of a STREAMING provider folder walk — emitted only when a
    * provider view was configured with `streamWalkedFiles`. The files in the
-   * instalment have already been added to Uppy (a `files-added` fires for each
-   * one), so this event carries the structure around them rather than the files
-   * themselves.
+   * instalment have already been added to Uppy (a `file-added` per file, and
+   * one `files-added` for the instalment), so this event carries the structure
+   * around them rather than the files themselves.
    *
    * `status` is the walk's lifecycle, and the only trustworthy one.
    * `files-added` cannot stand in for it in either direction: during the walk

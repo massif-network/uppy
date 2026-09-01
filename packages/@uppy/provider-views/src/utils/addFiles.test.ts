@@ -70,6 +70,34 @@ describe('addFiles()', () => {
     expect(onAdded).toHaveBeenCalledWith([seen[0], seen[2]])
   })
 
+  it('counts the "Added N files" notice from what Uppy took', () => {
+    const { plugin, provider, uppy } = setup({
+      // Two of the three fail a restriction, silently.
+      taken: (ids) => new Set([ids[1]]),
+    })
+
+    addFiles(
+      [cFile('a'), cFile('b'), cFile('c')],
+      plugin as never,
+      provider as never,
+    )
+
+    const notices = uppy.info.mock.calls.map(([text]) => text)
+    expect(notices).toContain('added 1')
+    expect(notices).not.toContain('added 3')
+  })
+
+  it('says nothing when Uppy took none of them', () => {
+    const { plugin, provider, uppy } = setup({ taken: () => new Set<string>() })
+
+    addFiles([cFile('a'), cFile('b')], plugin as never, provider as never)
+
+    // Offering two and having both rejected is not "Added 2 files", and it is
+    // not "Added 0 files" either — there is nothing to tell the user here, and
+    // the restriction failures raise their own errors.
+    expect(uppy.info).not.toHaveBeenCalled()
+  })
+
   it('never offers a file the instance already holds', () => {
     const { plugin, provider, offered } = setup()
     const onAdded = vi.fn()
