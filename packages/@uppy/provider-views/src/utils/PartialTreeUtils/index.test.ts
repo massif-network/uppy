@@ -966,6 +966,46 @@ describe('afterFill() streaming', () => {
     ).toEqual([])
   })
 
+  it('reports a resumed folder by its whole shape, not the pages it had left', async () => {
+    // The user opened `top` in the browser, so page 1 is already in the tree
+    // and the walk resumes from page 2. Reporting only what page 2 returned
+    // would understate `top` — and a consumer deciding leaf-versus-intermediary
+    // from `subfolderCount` would decide it from a fraction of the children,
+    // even though a reported folder is documented as final.
+    const tree: PartialTree = [
+      _root('ourRoot'),
+      _folder('top', {
+        parentId: 'ourRoot',
+        cached: true,
+        nextPagePath: 'top-page-2',
+        status: 'checked',
+      }),
+      _file('seen_1', { parentId: 'top', status: 'checked' }),
+      _folder('seen_sub', { parentId: 'top', status: 'checked', cached: true }),
+    ]
+    const api = (path: PartialTreeId) => {
+      if (path === 'top-page-2') {
+        return Promise.resolve({
+          nextPagePath: null,
+          items: [_cFile('late_1'), _cFolder('late_sub')],
+        })
+      }
+      if (path === 'late_sub') {
+        return Promise.resolve({ nextPagePath: null, items: [] })
+      }
+      return Promise.reject(new Error(`unexpected list: ${path}`))
+    }
+
+    const { batches } = await walk({ tree, api, now: impatientClock() })
+
+    const top = batches.flatMap((b) => b.folders).find((f) => f.path === 'name_top')
+    expect(top).toEqual({ path: 'name_top', fileCount: 2, subfolderCount: 2 })
+
+    // ...and the file from page 1 is streamed with the rest, rather than
+    // skipping the stream and turning up only in the final pass.
+    expect(batches.flatMap((b) => b.files).map((f) => f.id)).toContain('seen_1')
+  })
+
   it('leaves an already-cached folder to the final pass', async () => {
     // `afterFill` never re-lists a cached folder, so its files never pass
     // through the sink. They must still reach Uppy — which is why `donePicking`

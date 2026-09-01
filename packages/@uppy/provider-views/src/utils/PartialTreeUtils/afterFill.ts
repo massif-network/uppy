@@ -207,6 +207,34 @@ const createWalkSink = (
   const now = stream.now ?? (() => Date.now())
   const scratch = stream.scratch ?? createPathScratch()
 
+  // Children a folder ALREADY had before the walk began.
+  //
+  // A folder the user opened in the browser is `cached` with a `nextPagePath`,
+  // and the walk resumes from that page — so the listing it gets back covers
+  // only what is left. Counting just those would understate the folder's shape
+  // and, worse, break the promise that a reported folder is FINAL: a consumer
+  // deciding leaf-versus-intermediary from `subfolderCount` would decide it
+  // from a fraction of the children. The already-loaded files would also skip
+  // the stream entirely and only turn up in the final pass.
+  //
+  // Collected in ONE pass here rather than by scanning `poorTree` per walked
+  // folder, which would be O(tree) per folder — the quadratic this whole
+  // arrangement exists to avoid.
+  const alreadyPresent = new Map<
+    PartialTreeId,
+    { files: PartialTreeFile[]; folderCount: number }
+  >()
+  for (const node of poorTree) {
+    if (node.type === 'root') continue
+    let bucket = alreadyPresent.get(node.parentId)
+    if (!bucket) {
+      bucket = { files: [], folderCount: 0 }
+      alreadyPresent.set(node.parentId, bucket)
+    }
+    if (node.type === 'folder') bucket.folderCount += 1
+    else if (node.status === 'checked') bucket.files.push(node)
+  }
+
   let pendingFiles: PartialTreeFile[] = []
   let pendingFolders: WalkFolder[] = []
   let streamed = 0
@@ -214,14 +242,20 @@ const createWalkSink = (
 
   return {
     record: (folder, files, subfolderCount) => {
+      // Consumed, not merely read: a folder is walked once, so counting its
+      // pre-existing children a second time is not possible after this.
+      const carried = alreadyPresent.get(folder.id)
+      alreadyPresent.delete(folder.id)
+
       pendingFolders.push({
         path: getFolderRelativePath(poorTree, folder, scratch),
-        fileCount: files.length,
-        subfolderCount,
+        fileCount: files.length + (carried?.files.length ?? 0),
+        subfolderCount: subfolderCount + (carried?.folderCount ?? 0),
       })
       // Appended one by one, not spread: a single folder listing can hold
       // tens of thousands of files, and a spread that wide is an argument list
       // wide enough to overflow the stack.
+      if (carried) for (const file of carried.files) pendingFiles.push(file)
       for (const file of files) pendingFiles.push(file)
     },
 
