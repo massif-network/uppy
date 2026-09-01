@@ -7,12 +7,15 @@ import type {
 } from '@uppy/core'
 import type { CompanionFile } from '@uppy/utils'
 import { describe, expect, it, vi } from 'vitest'
+import type { WalkBatch } from './afterFill.js'
 import afterFill from './afterFill.js'
 import afterOpenFolder from './afterOpenFolder.js'
 import afterScrollFolder from './afterScrollFolder.js'
 import afterToggleCheckbox from './afterToggleCheckbox.js'
 import getBreadcrumbs from './getBreadcrumbs.js'
-import getCheckedFilesWithPaths from './getCheckedFilesWithPaths.js'
+import getCheckedFilesWithPaths, {
+  createPathScratch,
+} from './getCheckedFilesWithPaths.js'
 import getNumberOfSelectedFiles from './getNumberOfSelectedFiles.js'
 
 const _root = (id: string, options: any = {}): PartialTreeFolderRoot => ({
@@ -632,5 +635,484 @@ describe('getBreadcrumbs()', () => {
     ]
     const result = getBreadcrumbs(treeWithNullRoot, null)
     expect(result.map((f) => f.id)).toEqual([null])
+  })
+})
+
+describe('afterFill() walk progress', () => {
+  // A provider tree N folders wide, each holding `filesPerFolder` files.
+  const wideTree = (folderCount: number): PartialTree => [
+    _root('ourRoot'),
+    ...Array.from({ length: folderCount }, (_unused, i) =>
+      // `checked` + not-yet-`cached` is what makes afterFill walk a folder.
+      _folder(`f${i}`, {
+        parentId: 'ourRoot',
+        status: 'checked',
+        cached: false,
+      }),
+    ),
+  ]
+
+  const listing = (filesPerFolder: number) => async (directory: string) => ({
+    nextPagePath: null,
+    items: Array.from({ length: filesPerFolder }, (_unused, i) => ({
+      id: `${directory}_i${i}`,
+      requestPath: `${directory}_i${i}`,
+      name: `${directory}_i${i}.jpg`,
+      isFolder: false,
+    })) as never,
+  })
+
+  it('reports a running file count and the folders still queued', async () => {
+    const progress: Array<{
+      filesFound: number
+      foldersWalked: number
+      foldersRemaining: number
+    }> = []
+
+    await afterFill(
+      wideTree(8),
+      listing(5) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    expect(progress.length).toBeGreaterThan(0)
+    const last = progress.at(-1)!
+    // 8 folders x 5 files, and the walk is finished.
+    expect(last.filesFound).toEqual(40)
+    expect(last.foldersWalked).toEqual(8)
+    expect(last.foldersRemaining).toEqual(0)
+
+    // Monotonic: a progress report never goes backwards.
+    for (let i = 1; i < progress.length; i++) {
+      expect(progress[i].filesFound).toBeGreaterThanOrEqual(
+        progress[i - 1].filesFound,
+      )
+      expect(progress[i].foldersWalked).toBeGreaterThanOrEqual(
+        progress[i - 1].foldersWalked,
+      )
+    }
+  })
+
+  // Regression: the incremental counter must be SEEDED from files already
+  // checked in the partial tree. A user who opened a folder earlier has checked
+  // files in `cached` folders that this walk never revisits, so starting from
+  // zero under-reports the real selection in every event — including the final
+  // one, which is what a UI settles on.
+  it('counts files already checked before the walk started', async () => {
+    // prettier-ignore
+    const tree: PartialTree = [
+      _root('ourRoot'),
+      // Already fetched last time round, so afterFill will not walk it.
+      _folder('cachedOne', {
+        parentId: 'ourRoot',
+        status: 'checked',
+        cached: true,
+      }),
+      _file('cachedOne_a', { parentId: 'cachedOne', status: 'checked' }),
+      _file('cachedOne_b', { parentId: 'cachedOne', status: 'checked' }),
+      // Still to walk.
+      _folder('fresh', {
+        parentId: 'ourRoot',
+        status: 'checked',
+        cached: false,
+      }),
+    ]
+
+    const progress: Array<{ filesFound: number }> = []
+    await afterFill(
+      tree,
+      (async () => ({
+        nextPagePath: null,
+        items: [
+          {
+            id: 'fresh_1',
+            requestPath: 'fresh_1',
+            name: 'a.jpg',
+            isFolder: false,
+          },
+          {
+            id: 'fresh_2',
+            requestPath: 'fresh_2',
+            name: 'b.jpg',
+            isFolder: false,
+          },
+          {
+            id: 'fresh_3',
+            requestPath: 'fresh_3',
+            name: 'c.jpg',
+            isFolder: false,
+          },
+        ],
+      })) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    // 2 already checked + 3 newly fetched. Counting only the new ones gives 3.
+    expect(progress.at(-1)!.filesFound).toEqual(5)
+  })
+
+  // p-queue emits `completed` BEFORE decrementing `pending`, so the folder whose
+  // completion triggered the callback is still counted in `queue.pending`.
+  // Without excluding it, every event overstates the work left by one and the
+  // final per-task event can never reach zero — a UI would sit on "1 to go".
+  it('does not count the just-completed folder as remaining', async () => {
+    const folderCount = 5
+    const progress: Array<{ foldersWalked: number; foldersRemaining: number }> =
+      []
+
+    await afterFill(
+      [
+        _root('ourRoot'),
+        ...Array.from({ length: folderCount }, (_unused, i) =>
+          _folder(`f${i}`, {
+            parentId: 'ourRoot',
+            status: 'checked',
+            cached: false,
+          }),
+        ),
+      ],
+      (async () => ({ nextPagePath: null, items: [] })) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    // These folders have no children, so nothing is ever added to the queue
+    // beyond the initial 5: walked + remaining must account for all of them on
+    // every single event.
+    for (const p of progress) {
+      expect(p.foldersWalked + p.foldersRemaining).toEqual(folderCount)
+    }
+    expect(progress.at(-1)!.foldersRemaining).toEqual(0)
+  })
+
+  // `queue.onIdle()` resolves once every task has SETTLED, rejections included,
+  // and afterFill returns the partial tree regardless. The terminal report must
+  // therefore not claim zero remaining, or a failed/aborted walk looks identical
+  // to a clean one while files are silently missing.
+  it('does not report zero remaining when a folder listing failed', async () => {
+    const progress: Array<{ foldersWalked: number; foldersRemaining: number }> =
+      []
+
+    await afterFill(
+      [
+        _root('ourRoot'),
+        _folder('ok', {
+          parentId: 'ourRoot',
+          status: 'checked',
+          cached: false,
+        }),
+        _folder('boom', {
+          parentId: 'ourRoot',
+          status: 'checked',
+          cached: false,
+        }),
+      ],
+      (async (directory: string) => {
+        if (directory === 'boom') throw new Error('network down')
+        return {
+          nextPagePath: null,
+          items: [
+            { id: 'f', requestPath: 'f', name: 'a.jpg', isFolder: false },
+          ],
+        }
+      }) as never,
+      () => null,
+      (p) => progress.push(p),
+    )
+
+    const terminal = progress.at(-1)!
+    expect(terminal.foldersWalked).toEqual(1)
+    // 2 queued, 1 walked — the failed folder must still show as outstanding.
+    expect(terminal.foldersRemaining).toEqual(1)
+  })
+
+  // NOTE: there is deliberately no perf test for the incremental counting.
+  // A wall-clock assertion here does not work: at test-sized trees the old
+  // per-event full rescan completes in milliseconds, so the guard passed
+  // against the very implementation it was meant to reject, and at larger sizes
+  // it would be flaky on a loaded runner. The two implementations produce
+  // IDENTICAL output, so there is nothing deterministic left to assert — the
+  // complexity is documented at the counter instead.
+})
+
+describe('afterFill() streaming', () => {
+  // top/
+  //   name_t_a.jpg, name_t_b.jpg
+  //   sub1/ name_s1_c.jpg
+  //   sub2/            <- walked, and genuinely empty
+  const streamingTree = (): PartialTree => [
+    _root('ourRoot'),
+    _folder('top', { parentId: 'ourRoot', cached: false, status: 'checked' }),
+  ]
+
+  const streamingApi = (path: PartialTreeId) => {
+    if (path === 'top') {
+      return Promise.resolve({
+        nextPagePath: null,
+        items: [
+          _cFile('t_a'),
+          _cFile('t_b'),
+          _cFolder('sub1'),
+          _cFolder('sub2'),
+        ],
+      })
+    }
+    if (path === 'sub1') {
+      return Promise.resolve({ nextPagePath: null, items: [_cFile('s1_c')] })
+    }
+    if (path === 'sub2')
+      return Promise.resolve({ nextPagePath: null, items: [] })
+    return Promise.reject(new Error(`unexpected list: ${path}`))
+  }
+
+  /** A clock that is always past the flush interval, so every folder flushes. */
+  const impatientClock = () => {
+    let t = 0
+    return () => {
+      t += 1000
+      return t
+    }
+  }
+
+  const walk = async (
+    options: {
+      now?: () => number
+      validate?: (file: CompanionFile) => string | null
+      tree?: PartialTree
+      api?: (path: PartialTreeId) => Promise<any>
+    } = {},
+  ) => {
+    const batches: WalkBatch[] = []
+    const scratch = createPathScratch()
+    const enrichedTree = await afterFill(
+      options.tree ?? streamingTree(),
+      options.api ?? streamingApi,
+      options.validate ?? (() => null),
+      () => {},
+      { onBatch: (batch) => batches.push(batch), scratch, now: options.now },
+    )
+    return { batches, enrichedTree, scratch }
+  }
+
+  it('reports every walked folder exactly once, with its final shape', async () => {
+    const { batches } = await walk({ now: impatientClock() })
+
+    const folders = batches.flatMap((b) => b.folders)
+    expect(folders).toEqual([
+      { path: 'name_top', fileCount: 2, subfolderCount: 2 },
+      { path: 'name_top/name_sub1', fileCount: 1, subfolderCount: 0 },
+      { path: 'name_top/name_sub2', fileCount: 0, subfolderCount: 0 },
+    ])
+  })
+
+  it('streams a folder as soon as its listing completes', async () => {
+    const { batches } = await walk({ now: impatientClock() })
+
+    expect(batches.length).toEqual(3)
+    expect(batches[0].files.map((f) => f.id)).toEqual(['t_a', 't_b'])
+    expect(batches[1].files.map((f) => f.id)).toEqual(['s1_c'])
+    // A walked-but-empty folder is still announced — that is what tells a
+    // consumer it is a leaf with nothing in it, rather than one still pending.
+    expect(batches[2].files).toEqual([])
+    expect(batches[2].folders.length).toEqual(1)
+  })
+
+  it('coalesces instalments while the walk is fast', async () => {
+    // Real clock: the whole mocked walk finishes well inside the 250ms floor,
+    // so nothing flushes until the forced flush at the end. This is the
+    // property that keeps a 29k-file walk to a few dozen `addFiles` calls
+    // instead of one per folder.
+    const { batches } = await walk()
+
+    expect(batches.length).toEqual(1)
+    expect(batches[0].files.map((f) => f.id)).toEqual(['t_a', 't_b', 's1_c'])
+    expect(batches[0].folders.map((f) => f.path)).toEqual([
+      'name_top',
+      'name_top/name_sub1',
+      'name_top/name_sub2',
+    ])
+  })
+
+  it('streams exactly the files the non-streaming walk would have added', async () => {
+    const { batches } = await walk({ now: impatientClock() })
+
+    const notStreamed = await afterFill(
+      streamingTree(),
+      streamingApi,
+      () => null,
+      () => {},
+    )
+
+    expect(batches.flatMap((b) => b.files)).toEqual(
+      getCheckedFilesWithPaths(notStreamed),
+    )
+  })
+
+  it('leaves nothing for the final pass to add', async () => {
+    const { batches, enrichedTree, scratch } = await walk({
+      now: impatientClock(),
+    })
+
+    const streamedIds = new Set(
+      batches.flatMap((b) => b.files).map((f) => f.requestPath),
+    )
+    expect(
+      getCheckedFilesWithPaths(enrichedTree, {
+        exclude: streamedIds,
+        scratch,
+      }),
+    ).toEqual([])
+  })
+
+  it('reports a resumed folder by its whole shape, not the pages it had left', async () => {
+    // The user opened `top` in the browser, so page 1 is already in the tree
+    // and the walk resumes from page 2. Reporting only what page 2 returned
+    // would understate `top` — and a consumer deciding leaf-versus-intermediary
+    // from `subfolderCount` would decide it from a fraction of the children,
+    // even though a reported folder is documented as final.
+    const tree: PartialTree = [
+      _root('ourRoot'),
+      _folder('top', {
+        parentId: 'ourRoot',
+        cached: true,
+        nextPagePath: 'top-page-2',
+        status: 'checked',
+      }),
+      _file('seen_1', { parentId: 'top', status: 'checked' }),
+      _folder('seen_sub', { parentId: 'top', status: 'checked', cached: true }),
+    ]
+    const api = (path: PartialTreeId) => {
+      if (path === 'top-page-2') {
+        return Promise.resolve({
+          nextPagePath: null,
+          items: [_cFile('late_1'), _cFolder('late_sub')],
+        })
+      }
+      if (path === 'late_sub') {
+        return Promise.resolve({ nextPagePath: null, items: [] })
+      }
+      return Promise.reject(new Error(`unexpected list: ${path}`))
+    }
+
+    const { batches } = await walk({ tree, api, now: impatientClock() })
+
+    const top = batches
+      .flatMap((b) => b.folders)
+      .find((f) => f.path === 'name_top')
+    expect(top).toEqual({ path: 'name_top', fileCount: 2, subfolderCount: 2 })
+
+    // ...and the file from page 1 is streamed with the rest, rather than
+    // skipping the stream and turning up only in the final pass.
+    expect(batches.flatMap((b) => b.files).map((f) => f.id)).toContain('seen_1')
+  })
+
+  it('counts a repeated page item once, and walks a repeated folder once', async () => {
+    // A provider paginating unstably re-serves an item on the next page. The
+    // pages drain into ONE listing, so without de-duplication the tree gains a
+    // second node, `fileCount` is inflated, and — worse — the repeated FOLDER
+    // is queued and listed twice.
+    const tree: PartialTree = [
+      _root('ourRoot'),
+      _folder('top', { parentId: 'ourRoot', cached: false, status: 'checked' }),
+    ]
+    const listed: string[] = []
+    const api = (path: PartialTreeId) => {
+      listed.push(String(path))
+      if (path === 'top') {
+        return Promise.resolve({
+          nextPagePath: 'top-page-2',
+          items: [_cFile('a'), _cFolder('sub')],
+        })
+      }
+      if (path === 'top-page-2') {
+        return Promise.resolve({
+          nextPagePath: null,
+          items: [_cFile('a'), _cFolder('sub')],
+        })
+      }
+      if (path === 'sub') {
+        return Promise.resolve({ nextPagePath: null, items: [] })
+      }
+      return Promise.reject(new Error(`unexpected list: ${path}`))
+    }
+
+    const { batches, enrichedTree } = await walk({
+      tree,
+      api,
+      now: impatientClock(),
+    })
+
+    const top = batches
+      .flatMap((b) => b.folders)
+      .find((f) => f.path === 'name_top')
+    expect(top).toEqual({ path: 'name_top', fileCount: 1, subfolderCount: 1 })
+    expect(batches.flatMap((b) => b.files).map((f) => f.id)).toEqual(['a'])
+    expect(listed.filter((path) => path === 'sub')).toHaveLength(1)
+    expect(enrichedTree.filter((node) => node.id === 'a')).toHaveLength(1)
+  })
+
+  it('leaves an already-cached folder to the final pass', async () => {
+    // `afterFill` never re-lists a cached folder, so its files never pass
+    // through the sink. They must still reach Uppy — which is why `donePicking`
+    // runs a final `getCheckedFilesWithPaths` rather than trusting the stream.
+    const tree: PartialTree = [
+      _root('ourRoot'),
+      _folder('top', { parentId: 'ourRoot', cached: false, status: 'checked' }),
+      _folder('old', { parentId: 'ourRoot', cached: true, status: 'checked' }),
+      _file('old_1', { parentId: 'old', status: 'checked' }),
+    ]
+    const { batches, enrichedTree, scratch } = await walk({
+      tree,
+      now: impatientClock(),
+    })
+
+    const streamedIds = new Set(
+      batches.flatMap((b) => b.files).map((f) => f.requestPath),
+    )
+    expect(streamedIds.has('old_1')).toBe(false)
+
+    const remaining = getCheckedFilesWithPaths(enrichedTree, {
+      exclude: streamedIds,
+      scratch,
+    })
+    expect(remaining.map((f) => f.id)).toEqual(['old_1'])
+  })
+
+  it('does not stream a file that failed a restriction', async () => {
+    const { batches } = await walk({
+      now: impatientClock(),
+      validate: (file) => (file.id === 't_b' ? 'too big' : null),
+    })
+
+    const streamed = batches.flatMap((b) => b.files).map((f) => f.id)
+    expect(streamed).toEqual(['t_a', 's1_c'])
+    // ...and the folder's own count reflects only what was selected.
+    expect(batches[0].folders[0].fileCount).toEqual(1)
+  })
+})
+
+describe('getCheckedFilesWithPaths() scratch reuse', () => {
+  const treeUnder = (folderName: string): PartialTree => [
+    _root('ourRoot'),
+    {
+      ..._folder('shared', { parentId: 'ourRoot', status: 'checked' }),
+      data: { ..._cFolder('shared'), name: folderName },
+    },
+    _file('leaf', { parentId: 'shared', status: 'checked' }),
+  ]
+
+  it('does not answer for one tree out of another one\u2019s cache', () => {
+    const scratch = createPathScratch()
+
+    const first = getCheckedFilesWithPaths(treeUnder('Trips'), { scratch })
+    expect(first[0].relDirPath).toEqual('Trips/name_leaf.jpg')
+
+    // Same node ids, different parent names — a second tree reusing the scratch
+    // would otherwise be answered out of the first one's cached chains, which
+    // is a WRONG path rather than a merely stale one.
+    const second = getCheckedFilesWithPaths(treeUnder('Archive'), { scratch })
+    expect(second[0].relDirPath).toEqual('Archive/name_leaf.jpg')
   })
 })

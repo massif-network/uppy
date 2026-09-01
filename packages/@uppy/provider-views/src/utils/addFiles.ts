@@ -10,40 +10,105 @@ import type {
 import { getSafeFileId } from '@uppy/utils'
 import companionFileToUppyFile from './companionFileToUppyFile.js'
 
+/**
+ * Exported so a caller that suppresses the per-batch notices with `quiet` and
+ * aggregates them itself says the same thing this does. Not i18n'd — upstream
+ * has no message key for it, and inventing one here would fork the locale
+ * files too.
+ */
+export const duplicateFilesNotice = (count: number): string =>
+  `Not adding ${count} duplicate ${count === 1 ? 'file' : 'files'}`
+
+export type AddFilesOptions = {
+  /**
+   * Suppress the "Added N files" / "Not adding N files" notices.
+   *
+   * A streaming walk calls this dozens of times for one user action; without
+   * this the user would be buried in informational toasts for a selection they
+   * made once. The single notice for the whole selection is emitted by the
+   * caller when the walk finishes.
+   */
+  quiet?: boolean
+  /**
+   * Receives the ids Uppy ACTUALLY took, read back from its state after the
+   * add. Not the ids we offered: `uppy.addFiles` drops a file that fails a
+   * restriction without throwing, so the two differ exactly when a caller most
+   * needs to know — a count to report, or a set of ids to remove again.
+   */
+  onAdded?: (uppyFileIds: string[]) => void
+  /**
+   * How many files this batch skipped as duplicates — already on the instance,
+   * or claimed by an earlier entry in the same batch.
+   *
+   * The counterpart to `quiet`: a streaming caller silences the per-batch
+   * notice and owes the user one notice for the whole selection, which it
+   * cannot write without this count.
+   */
+  onSkipped?: (duplicateCount: number) => void
+}
+
 const addFiles = <M extends Meta, B extends Body>(
   companionFiles: CompanionFile[],
   plugin: UnknownPlugin<M, B>,
   provider: CompanionClientProvider | CompanionClientSearchProvider,
+  options: AddFilesOptions = {},
 ): void => {
   const uppyFiles = companionFiles.map((f) =>
     companionFileToUppyFile<M, B>(f, plugin, provider),
   )
 
   const filesToAdd: UppyFileNonGhost<M, B>[] = []
-  const filesAlreadyAdded: UppyFileNonGhost<M, B>[] = []
+  // Two reasons land here, and the notice below has to be true of both: the
+  // file is already on the instance, or an earlier entry in THIS batch already
+  // claimed its id. Only the first is "already exists".
+  const duplicateFiles: UppyFileNonGhost<M, B>[] = []
+  const idsToAdd: string[] = []
+  // Ids claimed by THIS batch. `checkIfFileAlreadyExists` only knows what is
+  // already on the instance, so without this a batch holding the same file
+  // twice — a provider repeating an item across a page boundary, say — hands
+  // Uppy two entries for one key and then reports two as added.
+  const claimed = new Set<string>()
   uppyFiles.forEach((file) => {
-    if (
-      plugin.uppy.checkIfFileAlreadyExists(
-        getSafeFileId(file, plugin.uppy.getID()),
-      )
-    ) {
-      filesAlreadyAdded.push(file)
-    } else {
-      filesToAdd.push(file)
+    const id = getSafeFileId(file, plugin.uppy.getID())
+    if (claimed.has(id) || plugin.uppy.checkIfFileAlreadyExists(id)) {
+      duplicateFiles.push(file)
+      return
     }
+    claimed.add(id)
+    filesToAdd.push(file)
+    idsToAdd.push(id)
   })
 
-  if (filesToAdd.length > 0) {
-    plugin.uppy.info(
-      plugin.uppy.i18n('addedNumFiles', { numFiles: filesToAdd.length }),
-    )
+  // `Uppy.addFiles([])` still clones the whole file set into a `setState` and
+  // emits `files-added`, re-rendering every subscriber for no change. Reachable
+  // with a non-empty argument too — every file in the batch having been
+  // filtered out above is exactly what a re-served page looks like. Unreachable
+  // for an EMPTY selection, which is what would otherwise notice the missing
+  // event: `FooterActions` does not render the confirm button at all until
+  // something is checked.
+  if (filesToAdd.length > 0) plugin.uppy.addFiles(filesToAdd)
+  // Read back after the add, so a consumer reacting to these ids can find every
+  // one of them on the instance — and so a restriction failure narrows the list
+  // instead of silently inflating it.
+  const addedIds = idsToAdd.filter((id) => plugin.uppy.getFile(id) != null)
+
+  // Counted from the same read-back, and for the same reason. `uppy.addFiles`
+  // drops a file that fails a per-file restriction without throwing, so a
+  // notice raised before the add would claim files the user never got — and
+  // would still say "Added 3 files" in the case where every one of them was
+  // rejected. That the notice comes after the add is what makes it true.
+  if (!options.quiet) {
+    if (addedIds.length > 0) {
+      plugin.uppy.info(
+        plugin.uppy.i18n('addedNumFiles', { numFiles: addedIds.length }),
+      )
+    }
+    if (duplicateFiles.length > 0) {
+      plugin.uppy.info(duplicateFilesNotice(duplicateFiles.length))
+    }
   }
-  if (filesAlreadyAdded.length > 0) {
-    plugin.uppy.info(
-      `Not adding ${filesAlreadyAdded.length} files because they already exist`,
-    )
-  }
-  plugin.uppy.addFiles(filesToAdd)
+  options.onAdded?.(addedIds)
+  options.onSkipped?.(duplicateFiles.length)
 }
 
 export default addFiles

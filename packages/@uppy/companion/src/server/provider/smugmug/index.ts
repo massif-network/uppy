@@ -22,7 +22,28 @@ import {
 
 const API_HOST = 'https://api.smugmug.com'
 const API_BASE = `${API_HOST}/api/v2`
-const PAGE_SIZE = 100
+// SmugMug's pagination parameter is `count` — NOT the underscore-prefixed form,
+// which is not a real parameter: the API silently ignores it and falls back to
+// the endpoint's own default, only 10 for `node!children`. Because Uppy's
+// provider tree-walk paginates sequentially *within* a folder, that turned every
+// large SmugMug import into thousands of serial round trips.
+//
+// Sizes verified against the live API:
+//   node!children  — count clamps to 200 (RequestedCount=200 when asking 500)
+//   album!images   — no cap observed; count=1000 returned all 669 images
+// SmugMug's own `NextPage` URI carries count forward, so these apply to every
+// page, not just the first (unlike `_expand`, see apiGetCursor).
+export const NODE_PAGE_SIZE = 200
+export const ALBUM_PAGE_SIZE = 500
+
+// Exported so the parameter NAME is covered by a test. The original bug was not
+// a wrong value but a wrong key — silently ignored by SmugMug, with no error to
+// notice — so asserting on these is what stops it recurring.
+export const nodeListParams = () => ({ count: NODE_PAGE_SIZE })
+export const albumListParams = () => ({
+  count: ALBUM_PAGE_SIZE,
+  _expand: 'Album',
+})
 
 // SmugMug is OAuth 1.0a: there's no Bearer token. Every request is signed with the
 // consumer (app) key/secret plus the user's access token/secret.
@@ -258,7 +279,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
           : await apiGet<SmugMugAlbumImagesResponse>(
               client,
               `album/${albumKey}!images`,
-              { _count: PAGE_SIZE, _expand: 'Album' },
+              albumListParams(),
             )
         return adaptAlbumImages(res, undefined, directory)
       }
@@ -271,7 +292,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
           : await apiGet<SmugMugNodeChildrenResponse>(
               client,
               `node/${nodeId}!children`,
-              { _count: PAGE_SIZE },
+              nodeListParams(),
             )
         return adaptNodeChildren(res, undefined, directory)
       }
@@ -291,7 +312,7 @@ export default class SmugMug extends Provider<SmugMugUserSession> {
         : await apiGet<SmugMugNodeChildrenResponse>(
             client,
             `node/${rootNodeId}!children`,
-            { _count: PAGE_SIZE },
+            nodeListParams(),
           )
       return adaptNodeChildren(res, username, directory)
     })
