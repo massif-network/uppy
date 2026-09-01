@@ -17,7 +17,7 @@ import companionFileToUppyFile from './companionFileToUppyFile.js'
  * files too.
  */
 export const duplicateFilesNotice = (count: number): string =>
-  `Not adding ${count} duplicate files`
+  `Not adding ${count} duplicate ${count === 1 ? 'file' : 'files'}`
 
 export type AddFilesOptions = {
   /**

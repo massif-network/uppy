@@ -146,7 +146,7 @@ describe('addFiles()', () => {
     addFiles([cFile('a'), cFile('a')], plugin as never, provider as never)
 
     const notices = uppy.info.mock.calls.map(([text]) => text)
-    expect(notices).toContain('Not adding 1 duplicate files')
+    expect(notices).toContain('Not adding 1 duplicate file')
     expect(notices.join(' ')).not.toContain('already exist')
   })
 
