@@ -22,8 +22,11 @@ import FooterActions from '../FooterActions.js'
 import addFiles from '../utils/addFiles.js'
 import getClickedRange from '../utils/getClickedRange.js'
 import handleError from '../utils/handleError.js'
+import type { WalkFolder } from '../utils/PartialTreeUtils/afterFill.js'
 import getBreadcrumbs from '../utils/PartialTreeUtils/getBreadcrumbs.js'
-import getCheckedFilesWithPaths from '../utils/PartialTreeUtils/getCheckedFilesWithPaths.js'
+import getCheckedFilesWithPaths, {
+  createPathScratch,
+} from '../utils/PartialTreeUtils/getCheckedFilesWithPaths.js'
 import getNumberOfSelectedFiles from '../utils/PartialTreeUtils/getNumberOfSelectedFiles.js'
 import PartialTreeUtils from '../utils/PartialTreeUtils/index.js'
 import shouldHandleScroll from '../utils/shouldHandleScroll.js'
@@ -81,6 +84,18 @@ export interface Opts<M extends Meta, B extends Body> {
   }) => h.JSX.Element
   virtualList: boolean
   supportsSearch?: boolean
+  /**
+   * Hand files to Uppy DURING the folder walk instead of only when it finishes.
+   *
+   * Off by default, because it changes two guarantees an embedder may rely on:
+   * `files-added` fires many times for one selection, and aggregate
+   * restrictions can no longer be enforced before the first file is added (they
+   * are checked at the end, and a failure then removes everything the walk
+   * streamed — see `donePicking`). Opt in only if the host reacts to partial
+   * selections on purpose; ours renders the import review screen as the tree
+   * comes in, which is the whole point of the walk being visible at all.
+   */
+  streamWalkedFiles?: boolean
 }
 type PassedOpts<M extends Meta, B extends Body> = Optional<
   Opts<M, B>,
@@ -502,11 +517,58 @@ export default class ProviderView<M extends Meta, B extends Body> {
     return result
   }
 
+  /**
+   * Announce one instalment of a streaming walk.
+   *
+   * Separate from `provider-walk-progress` (which is counters only, and fires
+   * whether or not streaming is on): this carries the walked folders, so a host
+   * can render structure — and its terminal `status` is the only reliable end
+   * signal. `files-added` is not: with streaming on, the last batch is usually
+   * empty, and `addFiles([])` still emits it.
+   */
+  #emitWalkBatch(
+    status: 'streaming' | 'complete' | 'aborted',
+    folders: WalkFolder[],
+    fileCount: number,
+  ): void {
+    // Stamped with the plugin id for the same reason the progress event is:
+    // several provider plugins share one Uppy instance, and a cancelled walk
+    // can report after the user has moved to another panel.
+    this.plugin.uppy.emit('provider-walk-batch', {
+      providerId: this.plugin.id,
+      status,
+      folders,
+      fileCount,
+    })
+  }
+
   async donePicking(): Promise<void> {
     const { partialTree } = this.plugin.getPluginState()
 
     if (this.isLoading) return
     this.setLoading(true)
+
+    const streaming = this.opts.streamWalkedFiles === true
+    // Shared with the final `getCheckedFilesWithPaths` below so the paths the
+    // walk already derived are not derived a second time.
+    const scratch = createPathScratch()
+    const streamedIds = new Set<PartialTreeId>()
+    const streamedUppyIds: string[] = []
+    let streamedCount = 0
+
+    // Everything the walk handed over before it failed, was cancelled, or hit an
+    // aggregate restriction. Without streaming those cases add nothing at all,
+    // so leaving partial files behind would be a new way to fail — the host
+    // would be left reviewing a selection the user never completed.
+    const discardStreamedFiles = () => {
+      if (streamedUppyIds.length > 0) {
+        this.plugin.uppy.removeFiles(streamedUppyIds)
+        streamedUppyIds.length = 0
+      }
+      streamedIds.clear()
+      streamedCount = 0
+    }
+
     await this.#withAbort(async (signal) => {
       // 1. Enrich our partialTree by fetching all 'checked' but not-yet-fetched folders
       const enrichedTree: PartialTree = await PartialTreeUtils.afterFill(
@@ -533,23 +595,71 @@ export default class ProviderView<M extends Meta, B extends Body> {
             providerId: this.plugin.id,
           })
         },
+        streaming
+          ? {
+              scratch,
+              onBatch: ({ files, folders }) => {
+                for (const file of files) streamedIds.add(file.requestPath)
+                addFiles(files, this.plugin, this.provider, {
+                  // One notice for the whole selection, emitted at the end —
+                  // not one per instalment.
+                  quiet: true,
+                  onAdded: (ids) => {
+                    // Appended, not spread — see the same note in `afterFill`.
+                    for (const id of ids) streamedUppyIds.push(id)
+                  },
+                })
+                streamedCount += files.length
+                this.#emitWalkBatch('streaming', folders, files.length)
+              },
+            }
+          : undefined,
       )
 
       // 2. Now that we know how many files there are - recheck aggregateRestrictions!
       const aggregateRestrictionError =
         this.validateAggregateRestrictions(enrichedTree)
       if (aggregateRestrictionError) {
+        // A streaming walk has already added files by the time we get here —
+        // the restriction is about the selection as a whole, so the selection
+        // as a whole has to go.
+        discardStreamedFiles()
+        if (streaming) this.#emitWalkBatch('aborted', [], 0)
         this.plugin.setPluginState({ partialTree: enrichedTree })
         return
       }
 
-      // 3. Add files
-      const companionFiles = getCheckedFilesWithPaths(enrichedTree)
-      addFiles(companionFiles, this.plugin, this.provider)
+      // 3. Add whatever the walk did not already stream. Usually nothing when
+      //    streaming — but a folder that was checked and already `cached` before
+      //    the walk began is never re-listed, so its files never pass through
+      //    the sink.
+      const companionFiles = getCheckedFilesWithPaths(enrichedTree, {
+        exclude: streaming ? streamedIds : undefined,
+        scratch,
+      })
+      if (companionFiles.length > 0 || !streaming) {
+        addFiles(companionFiles, this.plugin, this.provider, {
+          quiet: streaming,
+        })
+      }
+      if (streaming) {
+        const total = streamedCount + companionFiles.length
+        if (total > 0) {
+          this.plugin.uppy.info(
+            this.plugin.uppy.i18n('addedNumFiles', { numFiles: total }),
+          )
+        }
+        this.#emitWalkBatch('complete', [], companionFiles.length)
+      }
 
       // 4. Reset state
       this.resetPluginState()
-    }).catch(handleError(this.plugin.uppy))
+    }).catch((err) => {
+      // Cancelled, or a listing failed. Either way the selection is incomplete.
+      discardStreamedFiles()
+      if (streaming) this.#emitWalkBatch('aborted', [], 0)
+      return handleError(this.plugin.uppy)(err)
+    })
     this.setLoading(false)
   }
 

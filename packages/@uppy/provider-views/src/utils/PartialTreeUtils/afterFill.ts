@@ -8,6 +8,12 @@ import type { CompanionFile } from '@uppy/utils'
 // p-queue does not have a `"main"` field in its `package.json`, and that makes `import/no-unresolved` freak out.
 // We can safely ignore it because bundlers will happily use the `"exports"` field instead.
 import PQueue from 'p-queue'
+import {
+  createPathScratch,
+  getFolderRelativePath,
+  injectPathsIntoFiles,
+  type PathScratch,
+} from './getCheckedFilesWithPaths.js'
 import shallowClone from './shallowClone.js'
 
 export type ApiList = (directory: PartialTreeId) => Promise<{
@@ -38,6 +44,63 @@ export type WalkProgress = {
   foldersRemaining: number
 }
 
+/**
+ * A folder whose listing has COMPLETED, and everything final about it.
+ *
+ * Only walked folders are reported, which is what makes a streamed selection
+ * stable: `subfolderCount` is known the moment the listing lands (all pages are
+ * drained in one go), so a consumer can classify the folder — leaf or
+ * intermediary — immediately and never have to re-classify it later. Reporting
+ * folders on *discovery* instead would hand out folders of unknown shape, and a
+ * leaf that later sprouts children changes identity under the consumer's feet.
+ */
+export type WalkFolder = {
+  /**
+   * Path relative to the checked root, in the same coordinate space as the
+   * `relativePath` of the files inside it — so `${folder.path}/` prefixes them.
+   */
+  path: string
+  /** Files held directly in this folder that passed per-file restrictions. */
+  fileCount: number
+  /** Subfolders found in this folder's listing. */
+  subfolderCount: number
+}
+
+/** One incremental instalment of a walk. */
+export type WalkBatch = {
+  /** Newly selected files, with `absDirPath`/`relDirPath` already injected. */
+  files: CompanionFile[]
+  /** Folders walked since the previous batch. */
+  folders: WalkFolder[]
+}
+
+export type WalkStream = {
+  /** Receives each instalment. Called synchronously, on the walk's own turn. */
+  onBatch: (batch: WalkBatch) => void
+  /**
+   * Path-derivation scratch space. Pass the same object to the final
+   * `getCheckedFilesWithPaths` to avoid re-deriving every path a second time.
+   */
+  scratch?: PathScratch
+  /** Injectable clock, so tests do not depend on wall time. */
+  now?: () => number
+}
+
+/**
+ * Flush cadence.
+ *
+ * Both `uppy.addFiles` and a consumer's own state update clone the entire file
+ * set, so flushing per folder is O(files) per folder — the quadratic that makes
+ * a large import unusable in the first place. The interval therefore GROWS with
+ * how much has already been streamed: snappy for the first few hundred files,
+ * settling to one flush every few seconds once the set is large. A 29k-file
+ * walk lands in roughly three dozen flushes instead of a few thousand.
+ */
+const FLUSH_MIN_MS = 250
+const FLUSH_MAX_MS = 5_000
+/** Streamed-file count per millisecond of flush interval. */
+const FLUSH_FILES_PER_MS = 20
+
 const recursivelyFetch = async (
   queue: PQueue,
   poorTree: PartialTree,
@@ -49,6 +112,7 @@ const recursivelyFetch = async (
     foldersWalked: number
     foldersQueued: number
   },
+  sink: WalkSink | null,
 ) => {
   let items: CompanionFile[] = []
   let currentPath: PartialTreeId = poorFolder.cached
@@ -96,9 +160,13 @@ const recursivelyFetch = async (
   // completed folder is O(tree) per event, which is quadratic over a large walk
   // — the exact cost this progress reporting exists to make visible.
   counters.foldersWalked += 1
-  for (const file of files) {
-    if (file.status === 'checked') counters.filesFound += 1
-  }
+  const checkedFiles = files.filter((file) => file.status === 'checked')
+  counters.filesFound += checkedFiles.length
+
+  // Recorded only after the tree has been pushed to: path derivation reads the
+  // node's ancestors out of `poorTree`, so the folder and its files must be in
+  // it first.
+  sink?.record(poorFolder, checkedFiles, folders.length)
 
   folders.forEach(async (folder) => {
     counters.foldersQueued += 1
@@ -110,9 +178,73 @@ const recursivelyFetch = async (
         apiList,
         validateSingleFile,
         counters,
+        sink,
       ),
     )
   })
+
+  sink?.flush(false)
+}
+
+/**
+ * Buffers walked folders and their files, and hands them to the consumer on the
+ * growing cadence described above. Created per walk; a no-op when the embedder
+ * has not opted into streaming.
+ */
+type WalkSink = {
+  record: (
+    folder: PartialTreeFolderNode,
+    files: PartialTreeFile[],
+    subfolderCount: number,
+  ) => void
+  flush: (force: boolean) => void
+}
+
+const createWalkSink = (
+  poorTree: PartialTree,
+  stream: WalkStream,
+): WalkSink => {
+  const now = stream.now ?? (() => Date.now())
+  const scratch = stream.scratch ?? createPathScratch()
+
+  let pendingFiles: PartialTreeFile[] = []
+  let pendingFolders: WalkFolder[] = []
+  let streamed = 0
+  let lastFlushAt = now()
+
+  return {
+    record: (folder, files, subfolderCount) => {
+      pendingFolders.push({
+        path: getFolderRelativePath(poorTree, folder, scratch),
+        fileCount: files.length,
+        subfolderCount,
+      })
+      // Appended one by one, not spread: a single folder listing can hold
+      // tens of thousands of files, and a spread that wide is an argument list
+      // wide enough to overflow the stack.
+      for (const file of files) pendingFiles.push(file)
+    },
+
+    flush: (force) => {
+      if (pendingFiles.length === 0 && pendingFolders.length === 0) return
+      if (!force) {
+        const interval = Math.min(
+          FLUSH_MAX_MS,
+          Math.max(FLUSH_MIN_MS, streamed / FLUSH_FILES_PER_MS),
+        )
+        if (now() - lastFlushAt < interval) return
+      }
+
+      const files = injectPathsIntoFiles(poorTree, pendingFiles, scratch)
+      const folders = pendingFolders
+      pendingFiles = []
+      pendingFolders = []
+      streamed += files.length
+      lastFlushAt = now()
+
+      stream.onBatch({ files, folders })
+    },
+  }
 }
 
 const afterFill = async (
@@ -120,11 +252,14 @@ const afterFill = async (
   apiList: ApiList,
   validateSingleFile: (file: CompanionFile) => string | null,
   reportProgress: (progress: WalkProgress) => void,
+  stream?: WalkStream,
 ): Promise<PartialTree> => {
   const queue = new PQueue({ concurrency: 6 })
 
   // fill up the missing parts of a partialTree!
   const poorTree: PartialTree = shallowClone(partialTree)
+
+  const sink = stream ? createWalkSink(poorTree, stream) : null
 
   // Seeded from what is ALREADY checked, then incremented as new files arrive.
   // A partial tree can carry checked files from folders the user opened earlier
@@ -156,6 +291,7 @@ const afterFill = async (
         apiList,
         validateSingleFile,
         counters,
+        sink,
       ),
     )
   })
@@ -173,6 +309,10 @@ const afterFill = async (
   })
 
   await queue.onIdle()
+
+  // Everything still buffered, whatever the cadence would have said. A walk
+  // that ends mid-interval must not strand its last folders.
+  sink?.flush(true)
 
   // Terminal report, so a consumer always sees a final state even if the last
   // per-task event did not land on one.

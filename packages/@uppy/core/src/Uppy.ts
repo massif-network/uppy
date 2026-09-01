@@ -319,9 +319,12 @@ export interface _UppyEventMap<M extends Meta, B extends Body> {
   /**
    * Progress of a remote provider's recursive folder walk (see
    * `@uppy/provider-views` afterFill). Emitted per completed folder while the
-   * user waits for a large selection to be enumerated — files are not added to
-   * Uppy until the whole walk finishes, so this is the only signal available
-   * during it. There is no percentage: the tree size is unknown until the end.
+   * user waits for a large selection to be enumerated. There is no percentage:
+   * the tree size is unknown until the end.
+   *
+   * Counters only. For the structure being discovered — and for a reliable end
+   * signal — see `provider-walk-batch`, which a provider view emits when it has
+   * been opted into streaming.
    */
   'provider-walk-progress': (progress: {
     /**
@@ -335,6 +338,47 @@ export interface _UppyEventMap<M extends Meta, B extends Body> {
     filesFound: number
     foldersWalked: number
     foldersRemaining: number
+  }) => void
+  /**
+   * One instalment of a STREAMING provider folder walk — emitted only when a
+   * provider view was configured with `streamWalkedFiles`. The files in the
+   * instalment have already been added to Uppy (a `files-added` fires for each
+   * one), so this event carries the structure around them rather than the files
+   * themselves.
+   *
+   * `status` is the walk's lifecycle, and the only trustworthy one:
+   * `files-added` cannot stand in for it, because the final instalment is
+   * usually empty and `addFiles([])` emits `files-added` all the same.
+   */
+  'provider-walk-batch': (batch: {
+    /** Which provider plugin emitted this — see `provider-walk-progress`. */
+    providerId: string
+    /**
+     * `streaming` — more to come. `complete` — every file is now in Uppy.
+     * `aborted` — cancelled, a listing failed, or the whole selection breached
+     * an aggregate restriction; everything the walk streamed has been removed
+     * again, so a host holding derived state must discard it.
+     */
+    status: 'streaming' | 'complete' | 'aborted'
+    /**
+     * Folders whose listing completed since the previous instalment. Empty on
+     * the terminal instalments. Each is final: a folder is reported only once
+     * walked, so `subfolderCount` settles its shape and a host never has to
+     * re-classify it.
+     */
+    folders: {
+      /**
+       * Path relative to the checked root, in the same coordinate space as the
+       * `relativePath` of the files inside it. The folder's own title is the
+       * last segment — not carried separately, so the two can never disagree.
+       */
+      path: string
+      /** Files held directly here that passed per-file restrictions. */
+      fileCount: number
+      subfolderCount: number
+    }[]
+    /** Files added to Uppy in this instalment. */
+    fileCount: number
   }) => void
   'info-hidden': () => void
   'info-visible': () => void
