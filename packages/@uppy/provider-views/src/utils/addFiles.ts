@@ -40,7 +40,10 @@ const addFiles = <M extends Meta, B extends Body>(
   )
 
   const filesToAdd: UppyFileNonGhost<M, B>[] = []
-  const filesAlreadyAdded: UppyFileNonGhost<M, B>[] = []
+  // Two reasons land here, and the notice below has to be true of both: the
+  // file is already on the instance, or an earlier entry in THIS batch already
+  // claimed its id. Only the first is "already exists".
+  const duplicateFiles: UppyFileNonGhost<M, B>[] = []
   const idsToAdd: string[] = []
   // Ids claimed by THIS batch. `checkIfFileAlreadyExists` only knows what is
   // already on the instance, so without this a batch holding the same file
@@ -50,7 +53,7 @@ const addFiles = <M extends Meta, B extends Body>(
   uppyFiles.forEach((file) => {
     const id = getSafeFileId(file, plugin.uppy.getID())
     if (claimed.has(id) || plugin.uppy.checkIfFileAlreadyExists(id)) {
-      filesAlreadyAdded.push(file)
+      duplicateFiles.push(file)
       return
     }
     claimed.add(id)
@@ -64,10 +67,8 @@ const addFiles = <M extends Meta, B extends Body>(
         plugin.uppy.i18n('addedNumFiles', { numFiles: filesToAdd.length }),
       )
     }
-    if (filesAlreadyAdded.length > 0) {
-      plugin.uppy.info(
-        `Not adding ${filesAlreadyAdded.length} files because they already exist`,
-      )
+    if (duplicateFiles.length > 0) {
+      plugin.uppy.info(`Not adding ${duplicateFiles.length} duplicate files`)
     }
   }
   // `Uppy.addFiles([])` still clones the whole file set into a `setState` and

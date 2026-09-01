@@ -110,6 +110,18 @@ describe('addFiles()', () => {
     expect(offered).toEqual([])
   })
 
+  it('does not tell the user a batch duplicate "already exists"', () => {
+    const { plugin, provider, uppy } = setup()
+
+    // Both copies arrive in ONE batch, so the second is skipped because the
+    // first just claimed its id — not because it was already on the instance.
+    addFiles([cFile('a'), cFile('a')], plugin as never, provider as never)
+
+    const notices = uppy.info.mock.calls.map(([text]) => text)
+    expect(notices).toContain('Not adding 1 duplicate files')
+    expect(notices.join(' ')).not.toContain('already exist')
+  })
+
   it('stays silent when asked to', () => {
     // A streaming walk calls this dozens of times for ONE user action; the
     // single notice for the whole selection is the caller's to emit.
