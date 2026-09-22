@@ -1,3 +1,4 @@
+import SmugMug from '@massif-network/smugmug'
 import Audio from '@uppy/audio'
 import AwsS3 from '@uppy/aws-s3'
 import Compressor from '@uppy/compressor'
@@ -121,6 +122,11 @@ export default () => {
       companionUrl: COMPANION_URL,
       companionAllowedHosts,
       ...getCompanionKeysParams('GOOGLE_DRIVE'),
+    })
+    .use(SmugMug, {
+      target: Dashboard,
+      companionUrl: COMPANION_URL,
+      companionAllowedHosts,
     })
     // .use(Dropbox, { target: Dashboard, companionUrl: COMPANION_URL, companionAllowedHosts })
     // .use(Box, { target: Dashboard, companionUrl: COMPANION_URL, companionAllowedHosts })
