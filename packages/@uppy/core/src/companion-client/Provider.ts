@@ -202,8 +202,8 @@ export default class Provider<
       authCallbackToken,
     })
     const authWindow = window.open(link, '_blank')
-    let interval: number | undefined
     let webSocket: WebSocket | undefined
+    let timeout: ReturnType<typeof setTimeout> | undefined
 
     try {
       const host = getSocketHost(this.opts.companionUrl)
@@ -245,14 +245,18 @@ export default class Provider<
           reject(new Error('Authentication was aborted')),
         )
 
-        // poll for user closure of the window, so we can reject when it happens
-        if (authWindow) {
-          interval = window.setInterval(() => {
-            if (authWindow.closed) {
-              reject(new Error('Auth window was closed by the user'))
-            }
-          }, 500)
-        }
+        // We intentionally do NOT poll `authWindow.closed` to detect cancellation.
+        // Once the auth popup navigates cross-origin (e.g. to the OAuth provider),
+        // a COOP header on that page severs our handle to it and `window.closed`
+        // falsely reports `true` — which would abort a perfectly valid, in-progress
+        // authentication (SmugMug's login page does this). Success arrives over the
+        // WebSocket; cancellation comes via `signal` (the user dismissing the auth
+        // UI). A safety timeout prevents leaking the socket and pending promise if
+        // neither ever resolves.
+        timeout = setTimeout(
+          () => reject(new Error('Authentication timed out')),
+          5 * 60 * 1000,
+        )
       })
 
       this.setAuthToken(token)
@@ -267,7 +271,7 @@ export default class Provider<
       setTimeout(() => authWindow?.close(), 1)
       this.uppy.log(`Closing auth callback socket ${authCallbackToken}`)
       webSocket?.close()
-      clearInterval(interval)
+      clearTimeout(timeout)
     }
   }
 
