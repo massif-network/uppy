@@ -153,6 +153,41 @@ export default class OneDrive extends Provider<OneDriveUserSession> {
     })
   }
 
+  /**
+   * Get metadata for a specific file.
+   * This includes photo and video metadata for EXIF-like data.
+   */
+  override async getFileMetadata({
+    fileId,
+    providerUserSession: { accessToken: token },
+    query,
+  }: {
+    fileId: string
+    providerUserSession: OneDriveUserSession
+    query?: Query
+  }): Promise<unknown> {
+    return this.#withErrorHandling(
+      'provider.onedrive.getFileMetadata.error',
+      async () => {
+        const client = getClient({ token })
+        const queryRecord = getQueryRecord(query)
+
+        // OneDrive provides photo and video metadata through the Graph API.
+        // We need to expand thumbnails and get all metadata.
+        return client
+          .get(`${getRootPath(queryRecord)}/items/${fileId}`, {
+            searchParams: {
+              $expand: 'thumbnails',
+              $select:
+                'id,name,size,file,folder,photo,video,location,createdDateTime,lastModifiedDateTime,parentReference,@microsoft.graph.downloadUrl',
+            },
+            responseType: 'json',
+          })
+          .json<Record<string, unknown>>()
+      },
+    )
+  }
+
   override async logout() {
     // apparently M$ doesn't support programmatic oauth2 revoke
     return {

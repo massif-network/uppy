@@ -3,7 +3,11 @@ import fs from 'node:fs'
 import merge from 'lodash/merge.js'
 import z from 'zod'
 import packageJson from '../../package.json' with { type: 'json' }
-import type { CompanionInitOptions } from '../schemas/index.js'
+import type {
+  CompanionInitOptions,
+  GetBucketFn,
+  GetKeyFn,
+} from '../schemas/index.js'
 import * as utils from '../server/helpers/utils.js'
 import logger from '../server/logger.js'
 
@@ -67,6 +71,30 @@ const s3Prefix = process.env['COMPANION_AWS_PREFIX'] || ''
 const defaultStandaloneGetKey = (
   ...args: Parameters<typeof utils.defaultGetKey>
 ): string => `${s3Prefix}${utils.defaultGetKey(...args)}`
+
+/**
+ * When COMPANION_AWS_DYNAMIC_BUCKET=true, resolve bucket and key from file
+ * metadata provided by the client. Falls back to COMPANION_AWS_BUCKET and
+ * default UUID key generation when metadata fields are absent.
+ *
+ * When the flag is unset or false, bucket is the static COMPANION_AWS_BUCKET
+ * string and getKey uses the default UUID-based key generation. This keeps
+ * init-time code paths (IAM policy, STS response, accelerate endpoint) safe
+ * since they expect bucket to be a string.
+ */
+const getDynamicBucket: GetBucketFn = ({ metadata }) => {
+  const bucketName = metadata?.['bucketName']
+  if (typeof bucketName === 'string' && bucketName) return bucketName
+  return process.env['COMPANION_AWS_BUCKET'] as string
+}
+
+const getDynamicKey: GetKeyFn = ({ metadata, filename }) => {
+  const objectName = metadata?.['objectName']
+  if (typeof objectName === 'string' && objectName) {
+    return `${s3Prefix}${objectName}`
+  }
+  return `${s3Prefix}${utils.defaultGetKey({ filename })}`
+}
 
 const aclSchema = z
   .enum([
@@ -210,12 +238,23 @@ const getConfigFromEnv = (): StandaloneCompanionOptions => {
         key: process.env['COMPANION_UNSPLASH_KEY'],
         secret: process.env['COMPANION_UNSPLASH_SECRET'],
       },
+      smugmug: {
+        key: process.env['COMPANION_SMUGMUG_API_KEY'],
+        secret: getSecret('COMPANION_SMUGMUG_API_SECRET'),
+        credentialsURL: process.env['COMPANION_SMUGMUG_KEYS_ENDPOINT'],
+      },
     },
     s3: {
       key: process.env['COMPANION_AWS_KEY'],
-      getKey: defaultStandaloneGetKey,
+      getKey:
+        process.env['COMPANION_AWS_DYNAMIC_BUCKET'] === 'true'
+          ? getDynamicKey
+          : defaultStandaloneGetKey,
       secret: getSecret('COMPANION_AWS_SECRET'),
-      bucket: process.env['COMPANION_AWS_BUCKET'],
+      bucket:
+        process.env['COMPANION_AWS_DYNAMIC_BUCKET'] === 'true'
+          ? getDynamicBucket
+          : process.env['COMPANION_AWS_BUCKET'],
       endpoint: process.env['COMPANION_AWS_ENDPOINT'],
       region: process.env['COMPANION_AWS_REGION'],
       useAccelerateEndpoint:

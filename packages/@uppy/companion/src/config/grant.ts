@@ -73,5 +73,17 @@ export default function grantConfig(): GrantStaticConfig {
       access_url: 'https://zoom.us/oauth/token',
       callback: '/zoom/callback',
     },
+    smugmug: {
+      // `state: true` (from defaults) is required even for OAuth 1.0a: Companion
+      // carries its encrypted state (origin + authCallbackToken) through Grant's
+      // state mechanism, and send-token reads it back to deliver the auth token.
+      // Grant's OAuth1 access step doesn't validate state, so this is safe.
+      // The request/authorize/access URLs come from Grant's built-in `smugmug` config.
+      ...defaults,
+      oauth: 1,
+      callback: '/smugmug/callback',
+      // Access=Full lets users pick from private albums; Permissions=Read keeps it read-only.
+      custom_params: { Access: 'Full', Permissions: 'Read' },
+    },
   }
 }

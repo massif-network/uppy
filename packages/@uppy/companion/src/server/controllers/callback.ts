@@ -74,6 +74,11 @@ export default function callback(
     accessToken,
     refreshToken, // might be undefined for some providers
     ...providerClass.grantDynamicToUserSession({ grantDynamic }),
+    // OAuth1 providers (e.g. SmugMug) persist their `access_secret` here, since
+    // it isn't an `access_token`/`refresh_token` the callback handles directly.
+    ...providerClass.grantResponseToUserSession({
+      grantResponse: req.session?.grant?.response,
+    }),
   }
 
   logger.debug(

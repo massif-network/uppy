@@ -299,4 +299,53 @@ export class Drive extends Provider<DriveUserSession> {
       },
     )
   }
+
+  /**
+   * Get metadata for a specific file.
+   * This includes imageMediaMetadata and videoMediaMetadata for EXIF-like data.
+   */
+  override async getFileMetadata({
+    fileId,
+    providerUserSession: { accessToken: token },
+  }: {
+    fileId: string
+    providerUserSession: DriveUserSession
+  }): Promise<unknown> {
+    return withGoogleErrorHandling(
+      Drive.oauthProvider,
+      'provider.drive.getFileMetadata.error',
+      async () => {
+        const client = getClient({ token })
+
+        const getMetadataInner = async (metadataOfId: string) =>
+          client
+            .get(`files/${encodeURIComponent(metadataOfId)}`, {
+              searchParams: {
+                fields: DRIVE_FILE_FIELDS,
+                supportsAllDrives: true,
+              },
+              responseType: 'json',
+            })
+            .json<DriveFileStats>()
+
+        // Fetch the file metadata including image and video metadata
+        const metadata = await getMetadataInner(fileId)
+
+        // If it's a shortcut, fetch metadata for the target file
+        const mimeType =
+          typeof metadata.mimeType === 'string' ? metadata.mimeType : undefined
+        if (mimeType && isShortcut(mimeType)) {
+          const shortcutDetails = metadata.shortcutDetails
+          if (
+            isRecord(shortcutDetails) &&
+            typeof shortcutDetails['targetId'] === 'string'
+          ) {
+            return getMetadataInner(shortcutDetails['targetId'])
+          }
+        }
+
+        return metadata
+      },
+    )
+  }
 }

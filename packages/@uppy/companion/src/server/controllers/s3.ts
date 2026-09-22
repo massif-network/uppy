@@ -19,6 +19,37 @@ import {
   rfc2047EncodeMetadata,
   truncateFilename,
 } from '../helpers/utils.js'
+import logger from '../logger.js'
+
+// Server-side cache: uploadId → bucket name.
+// Populated during createMultipartUpload so that subsequent multipart
+// endpoints (signPart, listParts, complete, abort) can resolve the correct
+// bucket without metadata from the client.
+// Entries are removed on complete/abort; a 24-hour TTL guards against leaks
+// from abandoned uploads.
+const uploadBucketCache = new Map<string, { bucket: string; expires: number }>()
+const BUCKET_CACHE_TTL = 24 * 60 * 60 * 1000
+
+function cacheBucket(uploadId: string, bucket: string): void {
+  uploadBucketCache.set(uploadId, {
+    bucket,
+    expires: Date.now() + BUCKET_CACHE_TTL,
+  })
+}
+
+function getCachedBucket(uploadId: string): string | undefined {
+  const entry = uploadBucketCache.get(uploadId)
+  if (!entry) return undefined
+  if (Date.now() > entry.expires) {
+    uploadBucketCache.delete(uploadId)
+    return undefined
+  }
+  return entry.bucket
+}
+
+function removeCachedBucket(uploadId: string): void {
+  uploadBucketCache.delete(uploadId)
+}
 
 export default function s3(
   config: Pick<
@@ -137,6 +168,11 @@ export default function s3(
       fields[`x-amz-meta-${metadataKey}`] = value
     })
 
+    logger.info(
+      `Creating S3 presigned POST with bucket "${bucket}", key "${key}", and fields: ${JSON.stringify(fields)}`,
+      's3.getUploadParameters',
+    )
+
     // `createPresignedPost` sometimes pulls in a nested copy of `@aws-sdk/client-s3`,
     // which makes the `S3Client` type nominally incompatible. The instance is still
     // compatible at runtime.
@@ -232,11 +268,17 @@ export default function s3(
       }),
     }
 
+    logger.info(
+      `Creating S3 multipart upload with bucket "${bucket}", key "${key}", content type "${type}", and metadata: ${JSON.stringify(metadata)}`,
+      's3.createMultipartUpload',
+    )
+
     client.send(new CreateMultipartUploadCommand(params)).then((data) => {
+      if (data.UploadId) cacheBucket(data.UploadId, bucket)
       res.json({
         key: data.Key,
         uploadId: data.UploadId,
-        bucket: data.Bucket,
+        bucket,
       })
     }, next)
   }
@@ -276,7 +318,12 @@ export default function s3(
     }
     const keyStr = key
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket =
+      (typeof req.query['bucket'] === 'string'
+        ? req.query['bucket']
+        : undefined) ??
+      getCachedBucket(uploadId) ??
+      getBucket({ bucketOrFn: config.bucket, req })
 
     const parts: Part[] = []
 
@@ -341,7 +388,12 @@ export default function s3(
       return
     }
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket =
+      (typeof req.query['bucket'] === 'string'
+        ? req.query['bucket']
+        : undefined) ??
+      getCachedBucket(uploadId) ??
+      getBucket({ bucketOrFn: config.bucket, req })
 
     getSignedUrl(
       client,
@@ -412,7 +464,12 @@ export default function s3(
       return
     }
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket =
+      (typeof req.query['bucket'] === 'string'
+        ? req.query['bucket']
+        : undefined) ??
+      getCachedBucket(uploadId) ??
+      getBucket({ bucketOrFn: config.bucket, req })
 
     Promise.all(
       partNumbersArray.map((partNumber) => {
@@ -476,7 +533,12 @@ export default function s3(
       return
     }
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket =
+      (typeof req.query['bucket'] === 'string'
+        ? req.query['bucket']
+        : undefined) ??
+      getCachedBucket(uploadId) ??
+      getBucket({ bucketOrFn: config.bucket, req })
 
     client
       .send(
@@ -486,7 +548,10 @@ export default function s3(
           UploadId: uploadId,
         }),
       )
-      .then(() => res.json({}), next)
+      .then(() => {
+        removeCachedBucket(uploadId)
+        res.json({})
+      }, next)
   }
 
   /**
@@ -540,7 +605,12 @@ export default function s3(
       return
     }
 
-    const bucket = getBucket({ bucketOrFn: config.bucket, req })
+    const bucket =
+      (typeof req.query['bucket'] === 'string'
+        ? req.query['bucket']
+        : undefined) ??
+      getCachedBucket(uploadId) ??
+      getBucket({ bucketOrFn: config.bucket, req })
 
     client
       .send(
@@ -554,10 +624,11 @@ export default function s3(
         }),
       )
       .then((data) => {
+        removeCachedBucket(uploadId)
         res.json({
           location: data.Location,
           key: data.Key,
-          bucket: data.Bucket,
+          bucket,
         })
       }, next)
   }

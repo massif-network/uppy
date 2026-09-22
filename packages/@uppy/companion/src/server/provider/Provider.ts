@@ -3,6 +3,7 @@ import type {
   BuildUrl,
   CompanionContext,
   GrantDynamic,
+  GrantResponse,
   ProviderGrantConfig,
 } from '../../types/express.js'
 import { MAX_AGE_24H } from '../helpers/jwt.js'
@@ -27,6 +28,22 @@ export interface ProviderListItem {
   mimeType?: string | null | undefined
   size?: number | null | undefined
   thumbnail?: string | null | undefined
+  /**
+   * Provider-authored caption for the item, when the provider exposes one
+   * (SmugMug's `AlbumImage.Caption`). Plain text — providers are expected to
+   * strip any markup before setting it. The list controller serialises the item
+   * verbatim and `companionFileToUppyFile` preserves the whole object as the
+   * Uppy file's `data`, so this reaches the client without further plumbing.
+   */
+  caption?: string | undefined
+  /**
+   * Description of the container this item belongs to (SmugMug's album
+   * `Description`), denormalised onto every child item. Containers are folder
+   * items on the client and folders never become Uppy files, so there is no
+   * folder-shaped object to carry it — the app recovers it per folder group.
+   * Plain text, same contract as `caption`.
+   */
+  albumDescription?: string | undefined
 }
 
 // todo use these types in the Uppy client
@@ -112,6 +129,20 @@ export default class Provider<US = unknown> {
   }
 
   /**
+   * Download metadata for a provider file.
+   *
+   * This method should be overridden by provider implementations.
+   */
+  async getFileMetadata(options: {
+    companion: CompanionContext
+    providerUserSession: US
+    fileId: string
+    query?: Query
+  }): Promise<unknown> {
+    throw new Error('method not implemented')
+  }
+
+  /**
    * Return a thumbnail for a provider file.
    *
    * This method should be overridden by provider implementations.
@@ -188,6 +219,21 @@ export default class Provider<US = unknown> {
     grantDynamic,
   }: {
     grantDynamic: GrantDynamic
+  }): Record<string, unknown> {
+    return {}
+  }
+
+  /**
+   * Derive extra user-session fields from the raw Grant OAuth response.
+   *
+   * Most (OAuth2) providers don't need this: `access_token`/`refresh_token` are
+   * captured by the callback controller directly. OAuth1 providers (e.g. SmugMug)
+   * override this to persist the `access_secret` required to sign every API call.
+   */
+  static grantResponseToUserSession({
+    grantResponse,
+  }: {
+    grantResponse: GrantResponse | undefined
   }): Record<string, unknown> {
     return {}
   }
