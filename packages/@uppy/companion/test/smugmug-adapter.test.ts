@@ -326,6 +326,35 @@ describe('SmugMug list pagination params', () => {
 })
 
 describe('SmugMug membership identity', () => {
+  test('retains original and collected origins for the same image in two albums', () => {
+    const original = adaptAlbumImages(
+      { Response: { AlbumImage: [{ ImageKey: 'shared', Origin: 'Album' }] } },
+      undefined,
+      'album:A',
+    ).items[0]
+    const collected = adaptAlbumImages(
+      {
+        Response: { AlbumImage: [{ ImageKey: 'shared', Origin: 'Collected' }] },
+      },
+      undefined,
+      'album:B',
+    ).items[0]
+    expect(original).toMatchObject({ id: 'image:A:shared', origin: 'Album' })
+    expect(collected).toMatchObject({
+      id: 'image:B:shared',
+      origin: 'Collected',
+    })
+    expect(
+      adaptAlbumImages(
+        {
+          Response: { AlbumImage: [{ ImageKey: 'unknown', Origin: 'Other' }] },
+        },
+        undefined,
+        'album:A',
+      ).items[0]?.origin,
+    ).toBeUndefined()
+  })
+
   test('keeps shared images in both albums, including a later page', () => {
     const response = {
       Response: {

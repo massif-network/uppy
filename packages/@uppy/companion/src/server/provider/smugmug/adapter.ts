@@ -1,6 +1,6 @@
 import querystring from 'node:querystring'
 import mime from 'mime-types'
-import type { ProviderListResponse } from '../Provider.js'
+import type { ProviderListItem, ProviderListResponse } from '../Provider.js'
 
 // SmugMug API v2 response shapes (only the fields we consume).
 // Docs: https://api.smugmug.com/api/v2/doc/index.html
@@ -24,6 +24,7 @@ export type SmugMugNodeChildrenResponse = {
 }
 
 export type SmugMugAlbumImage = {
+  Origin?: string
   Title?: string
   Caption?: string
   FileName?: string
@@ -251,7 +252,7 @@ export function adaptAlbumImages(
 
   const items = images
     .filter((image) => !image.IsVideo && image.ImageKey != null)
-    .map((image) => {
+    .map((image): ProviderListItem => {
       const name = image.FileName || image.Title || image.ImageKey || ''
       const mimeType = mime.lookup(name)
       const requestPath = `image:${albumKey}:${image.ImageKey}`
@@ -275,6 +276,10 @@ export function adaptAlbumImages(
         // group; identical for all images in the album.
         albumDescription,
         sourceAccount,
+        origin:
+          image.Origin === 'Album' || image.Origin === 'Collected'
+            ? image.Origin
+            : undefined,
       }
     })
 
