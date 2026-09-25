@@ -78,10 +78,13 @@ type ImageResponse = {
   }
 }
 
-// `image:<ImageKey>` ids are stored by the adapter; CDN downloads and metadata
-// lookups both want the bare key.
-const toImageKey = (id: string): string =>
-  id.startsWith('image:') ? id.slice('image:'.length) : id
+// Membership IDs include the containing album; API lookups use only the image.
+// Accept legacy IDs too so queued uploads survive a Companion deployment.
+export const toImageKey = (id: string): string => {
+  const match = /^(?:image:(?:[A-Za-z0-9]+:)?)?([A-Za-z0-9]+)$/.exec(id)
+  if (!match) throw new Error('Invalid SmugMug image identifier')
+  return match[1]!
+}
 
 const getConsumer = (companion: CompanionWithOptions): Consumer => {
   const opts = companion.options.providerOptions?.['smugmug']

@@ -44,6 +44,8 @@ export interface ProviderListItem {
    * Plain text, same contract as `caption`.
    */
   albumDescription?: string | undefined
+  /** Account owning the containing album, when provided by the source API. */
+  sourceAccount?: string | undefined
 }
 
 // todo use these types in the Uppy client
