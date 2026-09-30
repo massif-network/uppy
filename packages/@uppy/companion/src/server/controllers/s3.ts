@@ -20,6 +20,7 @@ import {
   truncateFilename,
 } from '../helpers/utils.js'
 import logger from '../logger.js'
+import * as redis from '../redis.js'
 
 // Server-side cache: uploadId → bucket name.
 // Populated during createMultipartUpload so that subsequent multipart
@@ -27,28 +28,118 @@ import logger from '../logger.js'
 // bucket without metadata from the client.
 // Entries are removed on complete/abort; a 24-hour TTL guards against leaks
 // from abandoned uploads.
+//
+// The cache is shared through Redis when Companion has one (the same client
+// the upload emitter uses), so that a follow-up request served by another
+// instance still resolves the bucket the upload was created in. The in-process
+// Map is the fast path and the only store when Redis is not configured.
 const uploadBucketCache = new Map<string, { bucket: string; expires: number }>()
-const BUCKET_CACHE_TTL = 24 * 60 * 60 * 1000
+const BUCKET_CACHE_TTL_SECONDS = 24 * 60 * 60
+const BUCKET_CACHE_TTL = BUCKET_CACHE_TTL_SECONDS * 1000
 
-function cacheBucket(uploadId: string, bucket: string): void {
+const bucketCacheKey = (uploadId: string) => `companion:s3:bucket:${uploadId}`
+
+// A Redis blip must not stall every create (ioredis retries a command for
+// ~10 s by default) — past this the write/read is treated as failed and the
+// in-process Map carries on alone.
+const BUCKET_CACHE_REDIS_TIMEOUT_MS = 2000
+
+function withTimeout<T>(promise: Promise<T>, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `${what} timed out after ${BUCKET_CACHE_REDIS_TIMEOUT_MS} ms`,
+          ),
+        ),
+      BUCKET_CACHE_REDIS_TIMEOUT_MS,
+    )
+    timer.unref?.()
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
+async function cacheBucket(uploadId: string, bucket: string): Promise<void> {
   uploadBucketCache.set(uploadId, {
     bucket,
     expires: Date.now() + BUCKET_CACHE_TTL,
   })
+  const store = redis.client()
+  if (!store) return
+  try {
+    await withTimeout(
+      store.set(
+        bucketCacheKey(uploadId),
+        bucket,
+        'EX',
+        BUCKET_CACHE_TTL_SECONDS,
+      ),
+      'redis set',
+    )
+    logger.debug(
+      `bucket "${bucket}" for upload ${uploadId} stored in redis`,
+      's3.bucketCache',
+    )
+  } catch (err) {
+    logger.warn(
+      `could not store bucket for upload ${uploadId} in redis: ${err}`,
+      's3.bucketCache',
+    )
+  }
 }
 
-function getCachedBucket(uploadId: string): string | undefined {
+async function getCachedBucket(uploadId: string): Promise<string | undefined> {
   const entry = uploadBucketCache.get(uploadId)
-  if (!entry) return undefined
-  if (Date.now() > entry.expires) {
+  if (entry) {
+    if (Date.now() <= entry.expires) return entry.bucket
     uploadBucketCache.delete(uploadId)
+  }
+  const store = redis.client()
+  if (!store) return undefined
+  try {
+    const bucket = await withTimeout(
+      store.get(bucketCacheKey(uploadId)),
+      'redis get',
+    )
+    if (typeof bucket !== 'string' || bucket === '') return undefined
+    uploadBucketCache.set(uploadId, {
+      bucket,
+      expires: Date.now() + BUCKET_CACHE_TTL,
+    })
+    logger.info(
+      `bucket "${bucket}" for upload ${uploadId} resolved from redis (created on another instance)`,
+      's3.bucketCache',
+    )
+    return bucket
+  } catch (err) {
+    logger.warn(
+      `could not read bucket for upload ${uploadId} from redis: ${err}`,
+      's3.bucketCache',
+    )
     return undefined
   }
-  return entry.bucket
 }
 
 function removeCachedBucket(uploadId: string): void {
   uploadBucketCache.delete(uploadId)
+  const store = redis.client()
+  if (!store) return
+  store.del(bucketCacheKey(uploadId)).catch((err) => {
+    logger.warn(
+      `could not remove bucket for upload ${uploadId} from redis: ${err}`,
+      's3.bucketCache',
+    )
+  })
 }
 
 export default function s3(
@@ -193,6 +284,39 @@ export default function s3(
   }
 
   /**
+   * Bucket for a multipart follow-up request (sign part, list parts,
+   * complete, abort). These requests carry no metadata, so the bucket comes
+   * from `?bucket=` (sent by clients that staged one), then from the cache
+   * populated at create time (shared through Redis across instances), then
+   * from a static `bucket` option. With a dynamic bucket option and neither
+   * source available the bucket is unknown: signing or completing against a
+   * default bucket can never succeed (the upload does not exist there), so
+   * the caller must answer 400 instead.
+   */
+  async function resolveFollowUpBucket(
+    req: Request,
+    uploadId: string,
+  ): Promise<string | undefined> {
+    const fromQuery = req.query['bucket']
+    if (typeof fromQuery === 'string' && fromQuery !== '') return fromQuery
+    const cached = await getCachedBucket(uploadId)
+    if (cached) return cached
+    if (typeof config.bucket === 'string') return config.bucket
+    return undefined
+  }
+
+  function rejectUnknownBucket(res: Response, uploadId: string): void {
+    logger.warn(
+      `bucket unknown for upload ${uploadId}: no ?bucket= and no cache entry`,
+      's3.bucketCache',
+    )
+    res.status(400).json({
+      error:
+        's3: the bucket for this uploadId is unknown on this server. Pass it as a query parameter, for example: "?bucket=my-bucket"',
+    })
+  }
+
+  /**
    * Create an S3 multipart upload. With this, files can be uploaded in chunks of 5MB+ each.
    *
    * Expected JSON body:
@@ -273,8 +397,8 @@ export default function s3(
       's3.createMultipartUpload',
     )
 
-    client.send(new CreateMultipartUploadCommand(params)).then((data) => {
-      if (data.UploadId) cacheBucket(data.UploadId, bucket)
+    client.send(new CreateMultipartUploadCommand(params)).then(async (data) => {
+      if (data.UploadId) await cacheBucket(data.UploadId, bucket)
       res.json({
         key: data.Key,
         uploadId: data.UploadId,
@@ -296,7 +420,11 @@ export default function s3(
    *     - ETag - a hash of this part's contents, used to refer to it.
    *     - Size - size of this part.
    */
-  function getUploadedParts(req: Request, res: Response, next: NextFunction) {
+  async function getUploadedParts(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) {
     const client = getS3Client(req, res)
     if (!client) return
     const s3Client = client
@@ -318,12 +446,11 @@ export default function s3(
     }
     const keyStr = key
 
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = await resolveFollowUpBucket(req, uploadId)
+    if (!bucket) {
+      rejectUnknownBucket(res, uploadId)
+      return
+    }
 
     const parts: Part[] = []
 
@@ -362,7 +489,11 @@ export default function s3(
    * Response JSON:
    *  - url - The URL to upload to, including signed query parameters.
    */
-  function signPartUpload(req: Request, res: Response, next: NextFunction) {
+  async function signPartUpload(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) {
     const client = getS3Client(req, res)
     if (!client) return
 
@@ -388,12 +519,11 @@ export default function s3(
       return
     }
 
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = await resolveFollowUpBucket(req, uploadId)
+    if (!bucket) {
+      rejectUnknownBucket(res, uploadId)
+      return
+    }
 
     getSignedUrl(
       client,
@@ -423,7 +553,7 @@ export default function s3(
    *  - presignedUrls - The URLs to upload to, including signed query parameters,
    *                    in an object mapped to part numbers.
    */
-  function batchSignPartsUpload(
+  async function batchSignPartsUpload(
     req: Request,
     res: Response,
     next: NextFunction,
@@ -464,12 +594,11 @@ export default function s3(
       return
     }
 
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = await resolveFollowUpBucket(req, uploadId)
+    if (!bucket) {
+      rejectUnknownBucket(res, uploadId)
+      return
+    }
 
     Promise.all(
       partNumbersArray.map((partNumber) => {
@@ -509,7 +638,7 @@ export default function s3(
    * Response JSON:
    *   Empty.
    */
-  function abortMultipartUpload(
+  async function abortMultipartUpload(
     req: Request,
     res: Response,
     next: NextFunction,
@@ -533,12 +662,11 @@ export default function s3(
       return
     }
 
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = await resolveFollowUpBucket(req, uploadId)
+    if (!bucket) {
+      rejectUnknownBucket(res, uploadId)
+      return
+    }
 
     client
       .send(
@@ -566,7 +694,7 @@ export default function s3(
    * Response JSON:
    *  - location - The full URL to the object in the S3 bucket.
    */
-  function completeMultipartUpload(
+  async function completeMultipartUpload(
     req: Request,
     res: Response,
     next: NextFunction,
@@ -605,12 +733,11 @@ export default function s3(
       return
     }
 
-    const bucket =
-      (typeof req.query['bucket'] === 'string'
-        ? req.query['bucket']
-        : undefined) ??
-      getCachedBucket(uploadId) ??
-      getBucket({ bucketOrFn: config.bucket, req })
+    const bucket = await resolveFollowUpBucket(req, uploadId)
+    if (!bucket) {
+      rejectUnknownBucket(res, uploadId)
+      return
+    }
 
     client
       .send(
