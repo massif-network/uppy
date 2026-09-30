@@ -53,6 +53,10 @@ async function cacheBucket(uploadId: string, bucket: string): Promise<void> {
       'EX',
       BUCKET_CACHE_TTL_SECONDS,
     )
+    logger.debug(
+      `bucket "${bucket}" for upload ${uploadId} stored in redis`,
+      's3.bucketCache',
+    )
   } catch (err) {
     logger.warn(
       `could not store bucket for upload ${uploadId} in redis: ${err}`,
@@ -76,6 +80,10 @@ async function getCachedBucket(uploadId: string): Promise<string | undefined> {
       bucket,
       expires: Date.now() + BUCKET_CACHE_TTL,
     })
+    logger.info(
+      `bucket "${bucket}" for upload ${uploadId} resolved from redis (created on another instance)`,
+      's3.bucketCache',
+    )
     return bucket
   } catch (err) {
     logger.warn(
