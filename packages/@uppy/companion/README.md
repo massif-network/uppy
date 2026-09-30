@@ -126,3 +126,17 @@ Make sure you set the required
 [environment variables](https://uppy.io/docs/companion/#Configure-Standalone).
 
 See [full documentation](https://uppy.io/docs/companion/)
+
+### SmugMug membership IDs (Massif fork)
+
+SmugMug listing items use `image:<AlbumKey>:<ImageKey>` for both `id` and
+`requestPath`. The album is the containing album, including collected images.
+This preserves shared images in each selected album and distinguishes images
+with identical filenames. `sourceAccount` identifies the album owner when the
+expanded album supplies it. `origin` preserves the response's `Album` or `Collected`
+membership classification. Clients must retain this identity through selection
+and upload; Massif patches upstream Uppy core and persists the provenance in its
+application layer. Companion does not access Postgres or assign storage keys.
+
+Download and metadata endpoints also accept legacy `image:<ImageKey>` and bare
+image keys, allowing queued requests to survive deployment.
