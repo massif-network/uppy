@@ -21,6 +21,7 @@ vi.mock('express-prom-bundle')
 
 const shared = vi.hoisted(() => ({
   store: new Map<string, string>(),
+  lastSetArgs: [] as unknown[],
   redisEnabled: true,
   s3Calls: [] as Array<{ name: string; input: Record<string, unknown> }>,
 }))
@@ -45,8 +46,9 @@ vi.mock('../src/server/redis.js', () => {
   const fake = {
     ...pubsub(),
     get: async (key: string) => shared.store.get(key) ?? null,
-    set: async (key: string, value: string) => {
+    set: async (key: string, value: string, ...args: unknown[]) => {
       shared.store.set(key, value)
+      shared.lastSetArgs = args
       return 'OK'
     },
     del: async (key: string) => (shared.store.delete(key) ? 1 : 0),
@@ -122,6 +124,7 @@ const freshInstance = async (env = dynamicBucketEnv) => {
 
 afterEach(() => {
   shared.store.clear()
+  shared.lastSetArgs = []
   shared.s3Calls.length = 0
   shared.redisEnabled = true
 })
@@ -137,6 +140,8 @@ describe('multipart follow-ups resolve the bucket across Companion instances', (
     expect(shared.store.get(`companion:s3:bucket:${uploadId}`)).toBe(
       'org-a-locations',
     )
+    // 24 h expiry, so an abandoned upload cannot leave the key in Redis forever
+    expect(shared.lastSetArgs).toEqual(['EX', 24 * 60 * 60])
 
     const second = await freshInstance()
 

@@ -39,6 +39,36 @@ const BUCKET_CACHE_TTL = BUCKET_CACHE_TTL_SECONDS * 1000
 
 const bucketCacheKey = (uploadId: string) => `companion:s3:bucket:${uploadId}`
 
+// A Redis blip must not stall every create (ioredis retries a command for
+// ~10 s by default) — past this the write/read is treated as failed and the
+// in-process Map carries on alone.
+const BUCKET_CACHE_REDIS_TIMEOUT_MS = 2000
+
+function withTimeout<T>(promise: Promise<T>, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `${what} timed out after ${BUCKET_CACHE_REDIS_TIMEOUT_MS} ms`,
+          ),
+        ),
+      BUCKET_CACHE_REDIS_TIMEOUT_MS,
+    )
+    timer.unref?.()
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
 async function cacheBucket(uploadId: string, bucket: string): Promise<void> {
   uploadBucketCache.set(uploadId, {
     bucket,
@@ -47,11 +77,14 @@ async function cacheBucket(uploadId: string, bucket: string): Promise<void> {
   const store = redis.client()
   if (!store) return
   try {
-    await store.set(
-      bucketCacheKey(uploadId),
-      bucket,
-      'EX',
-      BUCKET_CACHE_TTL_SECONDS,
+    await withTimeout(
+      store.set(
+        bucketCacheKey(uploadId),
+        bucket,
+        'EX',
+        BUCKET_CACHE_TTL_SECONDS,
+      ),
+      'redis set',
     )
     logger.debug(
       `bucket "${bucket}" for upload ${uploadId} stored in redis`,
@@ -74,7 +107,10 @@ async function getCachedBucket(uploadId: string): Promise<string | undefined> {
   const store = redis.client()
   if (!store) return undefined
   try {
-    const bucket = await store.get(bucketCacheKey(uploadId))
+    const bucket = await withTimeout(
+      store.get(bucketCacheKey(uploadId)),
+      'redis get',
+    )
     if (typeof bucket !== 'string' || bucket === '') return undefined
     uploadBucketCache.set(uploadId, {
       bucket,
