@@ -283,9 +283,8 @@ describe('multipart follow-ups resolve the bucket across Companion instances', (
       .expect(400)
     expect(sign.body.error).toMatch(/bucket for this uploadId is unknown/)
     expect(Date.now() - started).toBeLessThan(5000)
-    expect(shared.s3Calls.some((c) => c.name === 'UploadPartCommand')).toBe(
-      false,
-    )
+    // Nothing was signed: a fallback-bucket URL here would be the old bug.
+    expect(sign.body.url).toBeUndefined()
   }, 10000)
 
   test('a Redis SET that never settles times out: create still answers and the local cache serves follow-ups', async () => {
