@@ -19,6 +19,11 @@ import { getServer } from './mockserver.js'
 // metrics, which a second server (after vi.resetModules) would re-register.
 vi.mock('express-prom-bundle')
 
+// Every test rebuilds the whole Companion module graph (vi.resetModules +
+// standalone import); under CPU load that alone can exceed vitest's 5 s
+// default, and the two timeout tests wait a real 2 s on top.
+vi.setConfig({ testTimeout: 20_000 })
+
 const shared = vi.hoisted(() => ({
   store: new Map<string, string>(),
   lastSetArgs: [] as unknown[],
@@ -285,7 +290,7 @@ describe('multipart follow-ups resolve the bucket across Companion instances', (
     expect(Date.now() - started).toBeLessThan(5000)
     // Nothing was signed: a fallback-bucket URL here would be the old bug.
     expect(sign.body.url).toBeUndefined()
-  }, 10000)
+  })
 
   test('a Redis SET that never settles times out: create still answers and the local cache serves follow-ups', async () => {
     shared.hangSet = true
@@ -302,5 +307,5 @@ describe('multipart follow-ups resolve the bucket across Companion instances', (
     expect(sign.body.url).toBe(
       `https://signed.test/org-f-locations/${key}?part=1`,
     )
-  }, 10000)
+  })
 })
