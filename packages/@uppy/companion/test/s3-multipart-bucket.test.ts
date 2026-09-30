@@ -23,6 +23,9 @@ const shared = vi.hoisted(() => ({
   store: new Map<string, string>(),
   lastSetArgs: [] as unknown[],
   redisEnabled: true,
+  // When set, the fake's GET / SET never settle, to exercise the 2 s timeout path.
+  hangGet: false,
+  hangSet: false,
   s3Calls: [] as Array<{ name: string; input: Record<string, unknown> }>,
 }))
 
@@ -45,8 +48,12 @@ vi.mock('../src/server/redis.js', () => {
   }
   const fake = {
     ...pubsub(),
-    get: async (key: string) => shared.store.get(key) ?? null,
+    get: async (key: string) => {
+      if (shared.hangGet) return new Promise<never>(() => {})
+      return shared.store.get(key) ?? null
+    },
     set: async (key: string, value: string, ...args: unknown[]) => {
+      if (shared.hangSet) return new Promise<never>(() => {})
       shared.store.set(key, value)
       shared.lastSetArgs = args
       return 'OK'
@@ -125,6 +132,8 @@ const freshInstance = async (env = dynamicBucketEnv) => {
 afterEach(() => {
   shared.store.clear()
   shared.lastSetArgs = []
+  shared.hangGet = false
+  shared.hangSet = false
   shared.s3Calls.length = 0
   shared.redisEnabled = true
 })
@@ -260,4 +269,39 @@ describe('multipart follow-ups resolve the bucket across Companion instances', (
       .expect(200)
     expect(sign.body.url).toBe('https://signed.test/static-bucket/k?part=1')
   })
+
+  test('a Redis GET that never settles times out: the other instance answers 400 instead of hanging', async () => {
+    const first = await freshInstance()
+    const { uploadId, key } = await createUpload(first, 'org-e-locations')
+
+    shared.hangGet = true
+    const second = await freshInstance()
+    const started = Date.now()
+    const sign = await request(second)
+      .get(`/s3/multipart/${uploadId}/1`)
+      .query({ key })
+      .expect(400)
+    expect(sign.body.error).toMatch(/bucket for this uploadId is unknown/)
+    expect(Date.now() - started).toBeLessThan(5000)
+    expect(shared.s3Calls.some((c) => c.name === 'UploadPartCommand')).toBe(
+      false,
+    )
+  }, 10000)
+
+  test('a Redis SET that never settles times out: create still answers and the local cache serves follow-ups', async () => {
+    shared.hangSet = true
+    const server = await freshInstance()
+    const started = Date.now()
+    const { uploadId, key } = await createUpload(server, 'org-f-locations')
+    expect(Date.now() - started).toBeLessThan(5000)
+    expect(shared.store.has(`companion:s3:bucket:${uploadId}`)).toBe(false)
+
+    const sign = await request(server)
+      .get(`/s3/multipart/${uploadId}/1`)
+      .query({ key })
+      .expect(200)
+    expect(sign.body.url).toBe(
+      `https://signed.test/org-f-locations/${key}?part=1`,
+    )
+  }, 10000)
 })
