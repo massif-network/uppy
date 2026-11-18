@@ -20,6 +20,14 @@ import validator from 'validator'
 import type { CompanionRuntimeOptions } from '../types/companion-options.js'
 import emitter from './emitter/index.js'
 import headerSanitize from './header-blacklist.js'
+import {
+  DOWNLOAD_UPLOAD_TIMER,
+  isAbortOrTimeout,
+  logRemoteUploadAbort,
+  type RemoteFileLogContext,
+  remoteFileLogContext,
+  SOCKET_WAIT_TIMER,
+} from './helpers/abort-log.js'
 import { isRecord, toError } from './helpers/type-guards.js'
 import {
   getBucket,
@@ -470,6 +478,17 @@ export default class Uploader {
         return
       }
       logger.error(err, 'uploader.error', this.shortToken)
+      if (isAbortOrTimeout(err)) {
+        // No Companion-side timer covers the provider download or the upload
+        // to the destination (got defaults), so name the phase, not a value.
+        logRemoteUploadAbort({
+          err,
+          shortToken: this.shortToken,
+          timer: DOWNLOAD_UPLOAD_TIMER,
+          timeoutMs: 'none-configured',
+          context: remoteFileLogContext(req),
+        })
+      }
       await this.#emitError(err)
     } finally {
       emitter().removeAllListeners(`pause:${this.token}`)
@@ -589,7 +608,10 @@ export default class Uploader {
     return Uploader.shortenToken(this.token)
   }
 
-  async awaitReady(timeout: number): Promise<void> {
+  async awaitReady(
+    timeout: number,
+    context?: RemoteFileLogContext,
+  ): Promise<void> {
     logger.debug(
       'waiting for socket connection',
       'uploader.socket.wait',
@@ -597,9 +619,23 @@ export default class Uploader {
     )
 
     const eventName = `connection:${this.token}`
-    await once(emitter() as EventEmitter, eventName, {
-      signal: AbortSignal.timeout(timeout),
-    })
+    try {
+      await once(emitter() as EventEmitter, eventName, {
+        signal: AbortSignal.timeout(timeout),
+      })
+    } catch (err) {
+      // Logging only: the error is rethrown unchanged.
+      if (isAbortOrTimeout(err)) {
+        logRemoteUploadAbort({
+          err,
+          shortToken: this.shortToken,
+          timer: SOCKET_WAIT_TIMER,
+          timeoutMs: timeout,
+          context: context ?? { provider: 'unknown' },
+        })
+      }
+      throw err
+    }
 
     logger.debug(
       'socket connection received',
