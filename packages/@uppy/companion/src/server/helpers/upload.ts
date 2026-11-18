@@ -2,6 +2,7 @@ import type { Readable } from 'node:stream'
 import type { Request, Response } from 'express'
 import logger from '../logger.js'
 import Uploader from '../Uploader.js'
+import { remoteFileLogContext } from './abort-log.js'
 
 export async function startDownUpload({
   req,
@@ -43,7 +44,10 @@ export async function startDownUpload({
       undefined,
       req.id,
     )
-    await uploader.awaitReady(clientSocketConnectTimeout)
+    await uploader.awaitReady(
+      clientSocketConnectTimeout,
+      remoteFileLogContext(req),
+    )
     logger.debug(
       'Socket connection received. Starting remote download/upload.',
       undefined,
