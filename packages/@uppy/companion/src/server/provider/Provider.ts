@@ -44,6 +44,10 @@ export interface ProviderListItem {
    * Plain text, same contract as `caption`.
    */
   albumDescription?: string | undefined
+  /** Account owning the containing album, when provided by the source API. */
+  sourceAccount?: string | undefined
+  /** SmugMug membership in its original album or collected into this album. */
+  origin?: 'Album' | 'Collected' | undefined
 }
 
 // todo use these types in the Uppy client

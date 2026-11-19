@@ -12,6 +12,7 @@ import {
 import {
   albumListParams,
   nodeListParams,
+  toImageKey,
 } from '../src/server/provider/smugmug/index.js'
 
 // Regression coverage for album/folder pagination: the client pages by feeding
@@ -38,7 +39,7 @@ describe('SmugMug adapter pagination', () => {
       'album:abc',
     )
 
-    expect(items.map((i) => i.id)).toEqual(['image:k1'])
+    expect(items.map((i) => i.id)).toEqual(['image:abc:k1'])
     // Must re-route to the `album:` branch on the next page, not the root branch.
     const [path, qs] = (nextPagePath as string).split('?')
     expect(path).toBe('album:abc')
@@ -321,5 +322,81 @@ describe('SmugMug list pagination params', () => {
     // `_expand` rides along on the same request so the album description costs
     // no extra round trip; losing it would silently drop descriptions.
     expect(albumListParams()._expand).toBe('Album')
+  })
+})
+
+describe('SmugMug membership identity', () => {
+  test('retains original and collected origins for the same image in two albums', () => {
+    const original = adaptAlbumImages(
+      { Response: { AlbumImage: [{ ImageKey: 'shared', Origin: 'Album' }] } },
+      undefined,
+      'album:A',
+    ).items[0]
+    const collected = adaptAlbumImages(
+      {
+        Response: { AlbumImage: [{ ImageKey: 'shared', Origin: 'Collected' }] },
+      },
+      undefined,
+      'album:B',
+    ).items[0]
+    expect(original).toMatchObject({ id: 'image:A:shared', origin: 'Album' })
+    expect(collected).toMatchObject({
+      id: 'image:B:shared',
+      origin: 'Collected',
+    })
+    expect(
+      adaptAlbumImages(
+        {
+          Response: { AlbumImage: [{ ImageKey: 'unknown', Origin: 'Other' }] },
+        },
+        undefined,
+        'album:A',
+      ).items[0]?.origin,
+    ).toBeUndefined()
+  })
+
+  test('keeps shared images in both albums, including a later page', () => {
+    const response = {
+      Response: {
+        AlbumImage: [
+          { ImageKey: 'shared', FileName: 'same.jpg' },
+          { ImageKey: 'different', FileName: 'same.jpg' },
+        ],
+      },
+      Expansions: {
+        '/api/v2/album/A': {
+          Album: { Uris: { User: { Uri: '/api/v2/user/searchlight' } } },
+        },
+      },
+    }
+    const a = adaptAlbumImages(response, undefined, 'album:A').items
+    const b = adaptAlbumImages(response, undefined, 'album:B').items
+    expect(a.map((i) => i.id)).toEqual(['image:A:shared', 'image:A:different'])
+    expect(b.map((i) => i.requestPath)).toEqual([
+      'image:B:shared',
+      'image:B:different',
+    ])
+    expect(a[0]?.sourceAccount).toBe('searchlight')
+    expect(adaptAlbumImages(response, undefined, 'album:A').items[0]?.id).toBe(
+      a[0]?.id,
+    )
+  })
+
+  test.each([
+    'image:A:key',
+    'image:key',
+    'key',
+  ])('resolves %s for download and metadata', (id) => {
+    expect(toImageKey(id)).toBe('key')
+  })
+
+  test.each([
+    'image:A:key/../../user',
+    'image::key',
+    'image:A:key:extra',
+    'image:key?x=y',
+    '',
+  ])('rejects malformed identifier %s', (id) => {
+    expect(() => toImageKey(id)).toThrow('Invalid SmugMug image identifier')
   })
 })

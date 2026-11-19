@@ -46,7 +46,7 @@ SmugMug's tree has three node kinds that don't map 1:1 onto the flat
 | _(root, no dir)_   | `!authuser` → root node   | resolves nickname → children  |
 | `node:<NodeID>`    | `/node/{id}!children`     | Folders + Albums (`isFolder`) |
 | `album:<AlbumKey>` | `/album/{key}!images`     | Images (`!isFolder`)          |
-| `image:<ImageKey>` | `/image/{key}` (download) | the original file             |
+| `image:<AlbumKey>:<ImageKey>` | `/image/{key}` (download) | the original file             |
 
 - Folder **and** Album nodes are surfaced as `isFolder: true`; `Page` and other
   node types are skipped. Album keys are parsed from the node's `Uris.Album`.
@@ -55,6 +55,15 @@ SmugMug's tree has three node kinds that don't map 1:1 onto the flat
   treated as an `<img src>` (which is why `'album'` produced a broken image).
 - Pagination is driven off the response's `Pages.NextPage` URI, carried forward
   as the `cursor` query param.
+
+The v2 album-image response already contains `Origin: "Album"` or
+`Origin: "Collected"`. Companion forwards this as `origin` on each list item;
+both kinds retain their containing album in the membership ID. Do not infer the
+containing album from a thumbnail/CDN path, which can point at the original album.
+The listing request uses `count` and `_expand=Album`; no origin filter is needed.
+Live v2 checks on 2026-09-25 found both `origin=` and `Origin=` query parameters
+ignored, including single-origin values. The website's `rpc.organizer.getimages`
+is a separate session-authenticated endpoint, not used by Companion.
 
 ## Downloads, thumbnails, size
 
